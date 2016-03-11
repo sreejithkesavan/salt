@@ -712,7 +712,11 @@ def _manage_devices(devices, vm=None, container_ref=None):
                         break
 
             device_specs.append(disk_spec)
-            unit_number += 1
+            #condition to assign SCSI controller to disk on 0-15 node except 7. 
+            #Because, the virtual SCSI controller is assigned to virtual device node (z:7),
+            #so that device node is unavailable for hard disks or other devices. 
+            #Reference https://pubs.vmware.com/vsphere-60/index.jsp?topic=%2Fcom.vmware.vsphere.vm_admin.doc%2FGUID-5872D173-A076-42FE-8D0B-9DB0EB0E7362.html
+            unit_number += 2 if unit_number == 6 else 1
 
     if 'cd' in list(devices.keys()):
         cd_drives_to_create = list(set(devices['cd'].keys()) - set(existing_cd_drives_label))
