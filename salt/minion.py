@@ -531,7 +531,12 @@ class SMinion(MinionBase):
         # Clean out the proc directory (default /var/cache/salt/minion/proc)
         if (self.opts.get('file_client', 'remote') == 'remote'
                 or self.opts.get('use_master_when_local', False)):
-            self.eval_master(self.opts, failed=True)
+            if HAS_ZMQ:
+                zmq.eventloop.ioloop.install()
+            io_loop = LOOP_CLASS.current()
+            io_loop.run_sync(
+                lambda: self.eval_master(self.opts, failed=True)
+            )
         self.gen_modules(initial_load=True)
 
         # If configured, cache pillar data on the minion
@@ -649,7 +654,7 @@ class MultiMinion(MinionBase):
 
         if HAS_ZMQ:
             zmq.eventloop.ioloop.install()
-        self.io_loop = LOOP_CLASS()
+        self.io_loop = LOOP_CLASS.current()
 
     def _spawn_minions(self):
         '''
@@ -751,7 +756,7 @@ class Minion(MinionBase):
         if io_loop is None:
             if HAS_ZMQ:
                 zmq.eventloop.ioloop.install()
-            self.io_loop = LOOP_CLASS()
+            self.io_loop = LOOP_CLASS.current()
         else:
             self.io_loop = io_loop
 
