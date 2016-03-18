@@ -122,6 +122,7 @@ import logging
 import time
 import os.path
 import subprocess
+import re
 
 # Import salt libs
 import salt.utils
@@ -231,6 +232,17 @@ def _str_to_bool(var):
 
     return None
 
+def _atoi(text):
+    return int(text) if text.isdigit() else text
+
+# Sorting list into natural ordering
+def _natural_keys(text):
+    '''
+    alist.sort(key=_natural_keys) sorts in human order
+    http://nedbatchelder.com/blog/200712/human_sorting.html
+    (See Toothy's implementation in the comments)
+    '''
+    return [ _atoi(c) for c in re.split('(\d+)', text) ]
 
 def _get_si():
     '''
@@ -695,7 +707,7 @@ def _manage_devices(devices, vm=None, container_ref=None):
 
     if 'disk' in list(devices.keys()):
         disks_to_create = list(set(devices['disk'].keys()) - set(existing_disks_label))
-        disks_to_create.sort()
+        disks_to_create.sort(key=_natural_keys)
         log.debug("Hard disks to create: {0}".format(disks_to_create)) if disks_to_create else None  # pylint: disable=W0106
         for disk_label in disks_to_create:
             # create the disk
