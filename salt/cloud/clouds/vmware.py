@@ -279,7 +279,7 @@ def _add_new_hard_disk_helper(disk_label, size_gb, unit_number, controller_key=1
     disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
 
     disk_spec.device = vim.vm.device.VirtualDisk()
-    disk_spec.device.key = random_key
+    #disk_spec.device.key = random_key
     disk_spec.device.deviceInfo = vim.Description()
     disk_spec.device.deviceInfo.label = disk_label
     disk_spec.device.deviceInfo.summary = "{0} GB".format(size_gb)
