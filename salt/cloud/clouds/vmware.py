@@ -2545,6 +2545,9 @@ def create(vm_):
                 vm_['ssh_host'] = ip
 
                 out = salt.utils.cloud.bootstrap(vm_, __opts__)
+        else:
+            raise SaltCloudSystemExit(
+                "[ {0} ] Unable to retrieve IPv4 information after waiting for {1} seconds".format(vm_name, wait_for_ip_timeout))
 
     data = show_instance(vm_name, call='action')
     if deploy:
