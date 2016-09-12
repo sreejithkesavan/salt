@@ -792,6 +792,10 @@ def _valid_ip(ip_address):
     Return either True or False
     '''
 
+    #check ip_address is Noner
+    if ip_address is None:
+        return False
+
     # Make sure IP has four octets
     octets = ip_address.split('.')
     if len(octets) != 4:
