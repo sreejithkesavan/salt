@@ -845,12 +845,14 @@ def _wait_for_ip(vm_ref, max_wait):
         if time_counter % 5 == 0:
             log.info("[ {0} ] Waiting to retrieve IPv4 information [{1} s]".format(vm_ref.name, time_counter))
 
+        log.info("[ {0} ] Validating IPv4 address [ {1} ]".format(vm_ref.name, vm_ref.summary.guest.ipAddress))
         if vm_ref.summary.guest.ipAddress and _valid_ip(vm_ref.summary.guest.ipAddress):
             log.info("[ {0} ] Successfully retrieved IPv4 information in {1} seconds".format(vm_ref.name, time_counter))
             return vm_ref.summary.guest.ipAddress
         for net in vm_ref.guest.net:
             if net.ipConfig.ipAddress:
                 for current_ip in net.ipConfig.ipAddress:
+                    log.info("[ {0} ] Validating IPv4 address [ {1} ]".format(vm_ref.name, current_ip.ipAddress))
                     if _valid_ip(current_ip.ipAddress):
                         log.info("[ {0} ] Successfully retrieved IPv4 information in {1} seconds".format(vm_ref.name, time_counter))
                         return current_ip.ipAddress
