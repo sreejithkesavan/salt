@@ -1661,6 +1661,9 @@ def show_instance(name, call=None):
         if vm['name'] == name:
             return _format_instance_info(vm)
 
+    # Return empty response if VM name is not found
+    return {}
+
 
 def avail_images(call=None):
     '''
