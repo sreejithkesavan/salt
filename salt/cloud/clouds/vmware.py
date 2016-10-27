@@ -1661,6 +1661,9 @@ def show_instance(name, call=None):
         if vm['name'] == name:
             return _format_instance_info(vm)
 
+    # Return empty response if VM name is not found
+    return {}
+
 
 def avail_images(call=None):
     '''
@@ -2541,6 +2544,7 @@ def create(vm_):
         salt.utils.vmware.wait_for_task(task, vm_name, 'power', 5, 'info')
 
     # If it a template or if it does not need to be powered on then do not wait for the IP
+    out = None
     if not template and power:
         ip = _wait_for_ip(new_vm_ref, wait_for_ip_timeout)
         if ip:
@@ -2556,7 +2560,7 @@ def create(vm_):
                 "[ {0} ] Unable to retrieve IPv4 information after waiting for {1} seconds".format(vm_name, wait_for_ip_timeout))
 
     data = show_instance(vm_name, call='action')
-    if deploy:
+    if deploy and out is not None:
         data['deploy_kwargs'] = out['deploy_kwargs']
 
     salt.utils.cloud.fire_event(
