@@ -51,27 +51,14 @@ grains.item salt function:
 more info on using targeting with grains can be found :ref:`here
 <targeting-grains>`.
 
-Targeting with Executions
-=========================
-
-As of 0.8.8 targeting with executions is still under heavy development and this
-documentation is written to reference the behavior of execution matching in the
-future.
-
-Execution matching allows for a primary function to be executed, and then based
-on the return of the primary function the main function is executed.
-
-Execution matching allows for matching minions based on any arbitrary running
-data on the minions.
-
 Compound Targeting
 ==================
 
 .. versionadded:: 0.9.5
 
 Multiple target interfaces can be used in conjunction to determine the command
-targets. These targets can then be combined using and or or statements. This
-is well defined with an example:
+targets. These targets can then be combined using ``and`` or ``or`` statements.
+This is well defined with an example:
 
 .. code-block:: bash
 

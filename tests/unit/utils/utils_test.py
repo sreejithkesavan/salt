@@ -395,7 +395,7 @@ class UtilsTestCase(TestCase):
                          ('test_state0', {'result':  True}),
                          ('test_state', {'result': True}),
                      ])),
-                    ('host2', [])
+                    ('host2', OrderedDict([]))
                 ]))
             ])
         }
@@ -516,14 +516,9 @@ class UtilsTestCase(TestCase):
             ret = utils.date_cast('Mon Dec 23 10:19:15 MST 2013')
             expected_ret = datetime.datetime(2013, 12, 23, 10, 19, 15)
             self.assertEqual(ret, expected_ret)
-        except ImportError:
-            try:
-                ret = utils.date_cast('Mon Dec 23 10:19:15 MST 2013')
-                expected_ret = datetime.datetime(2013, 12, 23, 10, 19, 15)
-                self.assertEqual(ret, expected_ret)
-            except RuntimeError:
-                # Unparseable without timelib installed
-                self.skipTest('\'timelib\' is not installed')
+        except RuntimeError:
+            # Unparseable without timelib installed
+            self.skipTest('\'timelib\' is not installed')
 
     @skipIf(not HAS_TIMELIB, '\'timelib\' is not installed')
     def test_date_format(self):
@@ -552,9 +547,17 @@ class UtilsTestCase(TestCase):
         for teststr in (r'"\ []{}"',):
             self.assertEqual(teststr, yaml.safe_load(utils.yamlencoding.yaml_dquote(teststr)))
 
+    def test_yaml_dquote_doesNotAddNewLines(self):
+        teststr = '"' * 100
+        self.assertNotIn('\n', utils.yamlencoding.yaml_dquote(teststr))
+
     def test_yaml_squote(self):
         ret = utils.yamlencoding.yaml_squote(r'"')
         self.assertEqual(ret, r"""'"'""")
+
+    def test_yaml_squote_doesNotAddNewLines(self):
+        teststr = "'" * 100
+        self.assertNotIn('\n', utils.yamlencoding.yaml_squote(teststr))
 
     def test_yaml_encode(self):
         for testobj in (None, True, False, '[7, 5]', '"monkey"', 5, 7.5, "2014-06-02 15:30:29.7"):
@@ -765,6 +768,10 @@ class UtilsTestCase(TestCase):
             ut = bytes((0xe4, 0xb8, 0xad, 0xe5, 0x9b, 0xbd, 0xe8, 0xaa, 0x9e, 0x20, 0x28, 0xe7, 0xb9, 0x81, 0xe4, 0xbd, 0x93, 0x29))
             self.assertEqual(utils.to_str(ut, 'utf-8'), un)
             self.assertEqual(utils.to_str(bytearray(ut), 'utf-8'), un)
+            # Test situation when a minion returns incorrect utf-8 string because of... million reasons
+            ut2 = b'\x9c'
+            self.assertEqual(utils.to_str(ut2, 'utf-8'), u'\ufffd')
+            self.assertEqual(utils.to_str(bytearray(ut2), 'utf-8'), u'\ufffd')
         else:
             self.assertEqual(utils.to_str('plugh'), 'plugh')
             self.assertEqual(utils.to_str(u'áéíóúý', 'utf-8'), 'áéíóúý')

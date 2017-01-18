@@ -66,34 +66,8 @@ Install Salt (and dependencies) into the virtualenv:
 
 .. code-block:: bash
 
-    pip install M2Crypto    # Don't install on Debian/Ubuntu (see below)
     pip install pyzmq PyYAML pycrypto msgpack-python jinja2 psutil futures tornado
     pip install -e ./salt   # the path to the salt git clone from above
-
-.. note:: Installing M2Crypto
-
-    ``swig`` and ``libssl-dev`` are required to build M2Crypto. To fix
-    the error ``command 'swig' failed with exit status 1`` while installing M2Crypto,
-    try installing it with the following command:
-
-    .. code-block:: bash
-
-        env SWIG_FEATURES="-cpperraswarn -includeall -D__`uname -m`__ -I/usr/include/openssl" pip install M2Crypto
-
-    Debian and Ubuntu systems have modified openssl libraries and mandate that
-    a patched version of M2Crypto be installed. This means that M2Crypto
-    needs to be installed via apt:
-
-    .. code-block:: bash
-
-        apt-get install python-m2crypto
-
-    This also means that pulling in the M2Crypto installed using apt requires using
-    ``--system-site-packages`` when creating the virtualenv.
-
-    If you're using a platform other than Debian or Ubuntu, and you are
-    installing M2Crypto via pip instead of a system package, then you will also
-    need the ``gcc`` compiler.
 
 .. note:: Installing psutil
 
@@ -109,10 +83,10 @@ Install Salt (and dependencies) into the virtualenv:
 .. _`Fedora Linux`: http://fedoraproject.org/
 .. _`Amazon Linux`: https://aws.amazon.com/amazon-linux-ami/
 
-.. note:: Installing dependencies on OS X.
+.. note:: Installing dependencies on macOS.
 
-    You can install needed dependencies on OS X using homebrew or macports.
-    See :doc:`OS X Installation </topics/installation/osx>`
+    You can install needed dependencies on macOS using homebrew or macports.
+    See :ref:`macOS Installation <macos-installation>`
 
 .. warning:: Installing on RedHat-based Distros
 
@@ -160,7 +134,7 @@ Edit the minion config file:
     also running a non-development version of Salt, then you will have to
     change the ``master_port`` value in the minion config to match.
 
-.. note:: Using `salt-call` with a :doc:`Standalone Minion </topics/tutorials/standalone_minion>`
+.. note:: Using `salt-call` with a :ref:`Standalone Minion <tutorial-standalone-minion>`
 
     If you plan to run `salt-call` with this self-contained development
     environment in a masterless setup, you should invoke `salt-call` with
@@ -221,8 +195,8 @@ If you would like to log to the console instead of to the log file, remove the
         # use 'limit descriptors 2047' for c-shell
         ulimit -n 2047
 
-    To set file descriptors on OSX, refer to the :doc:`OS X Installation
-    </topics/installation/osx>` instructions.
+    To set file descriptors on macOS, refer to the :ref:`macOS Installation
+    <macos-installation>` instructions.
 
 
 Changing Default Paths
@@ -337,7 +311,7 @@ Run the test suite with following command:
 
     ./setup.py test
 
-See :doc:`here <tests/index>` for more information regarding the test suite.
+See :ref:`here <salt-test-suite>` for more information regarding the test suite.
 
 Issue and Pull Request Labeling System
 --------------------------------------

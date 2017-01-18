@@ -28,7 +28,7 @@ def __virtual__():
         return __virtualname__
 
 
-def validate(config):
+def __validate__(config):
     '''
     Validate the beacon configuration
     '''
@@ -74,14 +74,14 @@ def beacon(config):
     log.trace('adb beacon starting')
     ret = []
 
-    _validate = validate(config)
+    _validate = __validate__(config)
     if not _validate[0]:
         return ret
 
     out = __salt__['cmd.run']('adb devices', runas=config.get('user', None))
 
     lines = out.split('\n')[1:]
-    last_state_devices = last_state.keys()
+    last_state_devices = list(last_state.keys())
     found_devices = []
 
     for line in lines:

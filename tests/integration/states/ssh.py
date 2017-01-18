@@ -24,7 +24,7 @@ import salt.utils
 
 KNOWN_HOSTS = os.path.join(integration.TMP, 'known_hosts')
 GITHUB_FINGERPRINT = '16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48'
-GITHUB_IP = '192.30.252.129'
+GITHUB_IP = '192.30.253.113'
 
 
 @skip_if_binaries_missing(['ssh', 'ssh-keygen'], check_all=True)
@@ -80,9 +80,18 @@ class SSHKnownHostsStateTest(integration.ModuleCase,
         # then add a record for IP address
         ret = self.run_state('ssh_known_hosts.present',
                              **dict(kwargs, name=GITHUB_IP))
-        self.assertSaltStateChangesEqual(
-            ret, GITHUB_FINGERPRINT, keys=('new', 'fingerprint')
-        )
+        try:
+            self.assertSaltStateChangesEqual(
+                ret, GITHUB_FINGERPRINT, keys=('new', 'fingerprint')
+            )
+        except AssertionError as err:
+            try:
+                self.assertInSaltComment(
+                        'Unable to receive remote host key', ret
+                        )
+                self.skipTest('Unable to receive remote host key')
+            except AssertionError:
+                raise err
 
         # record for every host must be available
         ret = self.run_function(
@@ -246,4 +255,4 @@ class SSHAuthStateTests(integration.ModuleCase,
 
 if __name__ == '__main__':
     from integration import run_tests
-    run_tests(SSHKnownHostsStateTest)
+    run_tests([SSHKnownHostsStateTest, SSHAuthStateTests])

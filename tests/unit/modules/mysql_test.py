@@ -88,7 +88,7 @@ class MySQLTestCase(TestCase):
             mysql.user_chpass('testuser', password='BLUECOW')
             calls = (
                 call().cursor().execute(
-                    'UPDATE mysql.user SET password=PASSWORD(%(password)s) WHERE User=%(user)s AND Host = %(host)s;',
+                    'UPDATE mysql.user SET Password=PASSWORD(%(password)s) WHERE User=%(user)s AND Host = %(host)s;',
                     {'password': 'BLUECOW',
                      'user': 'testuser',
                      'host': 'localhost',
@@ -160,7 +160,7 @@ class MySQLTestCase(TestCase):
         '''
         self._test_call(
             mysql.db_create,
-            'CREATE DATABASE `test``\'" db`;',
+            'CREATE DATABASE IF NOT EXISTS `test``\'" db`;',
             'test`\'" db'
         )
 
@@ -268,6 +268,17 @@ class MySQLTestCase(TestCase):
         Test get_slave_status in the mysql execution module
         '''
         self._test_call(mysql.get_slave_status, 'SHOW SLAVE STATUS')
+
+    def test_get_slave_status_bad_server(self):
+        '''
+        Test get_slave_status in the mysql execution module, simulating a broken server
+        '''
+        connect_mock = MagicMock(return_value=None)
+        mysql._connect = connect_mock
+        with patch.dict(mysql.__salt__, {'config.option': MagicMock()}):
+            rslt = mysql.get_slave_status()
+            connect_mock.assert_has_calls([call()])
+            self.assertEqual(rslt, [])
 
     @skipIf(True, 'MySQL module claims this function is not ready for production')
     def test_free_slave(self):

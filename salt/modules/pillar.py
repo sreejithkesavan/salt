@@ -8,7 +8,9 @@ from __future__ import absolute_import
 import collections
 
 # Import third party libs
+import copy
 import os
+import copy
 import yaml
 import salt.ext.six as six
 
@@ -16,12 +18,17 @@ import salt.ext.six as six
 import salt.pillar
 import salt.utils
 from salt.defaults import DEFAULT_TARGET_DELIM
-from salt.exceptions import CommandExecutionError
+from salt.exceptions import CommandExecutionError, SaltInvocationError
 
 __proxyenabled__ = ['*']
 
 
-def get(key, default=KeyError, merge=False, delimiter=DEFAULT_TARGET_DELIM):
+def get(key,
+        default=KeyError,
+        merge=False,
+        delimiter=DEFAULT_TARGET_DELIM,
+        saltenv=None,
+        pillarenv=None):
     '''
     .. versionadded:: 0.14
 
@@ -54,6 +61,28 @@ def get(key, default=KeyError, merge=False, delimiter=DEFAULT_TARGET_DELIM):
 
         .. versionadded:: 2014.7.0
 
+    saltenv
+        Included only for compatibility with
+        :conf_minion:`pillarenv_from_saltenv`, and is otherwise ignored.
+
+        .. versionadded:: Nitrogen
+
+    pillarenv
+        If specified, this function will query the master to generate fresh
+        pillar data on the fly, specifically from the requested pillar
+        environment. Note that this can produce different pillar data than
+        executing this function without an environment, as its normal behavior
+        is just to return a value from minion's pillar data in memory (which
+        can be sourced from more than one pillar environment).
+
+        Using this argument will not affect the pillar data in memory. It will
+        however be slightly slower and use more resources on the master due to
+        the need for the master to generate and send the minion fresh pillar
+        data. This tradeoff in performance however allows for the use case
+        where pillar data is desired only from a single environment.
+
+        .. versionadded:: Nitrogen
+
     CLI Example:
 
     .. code-block:: bash
@@ -63,14 +92,23 @@ def get(key, default=KeyError, merge=False, delimiter=DEFAULT_TARGET_DELIM):
     if not __opts__.get('pillar_raise_on_missing'):
         if default is KeyError:
             default = ''
+    opt_merge_lists = __opts__.get('pillar_merge_lists', False)
+    pillar_dict = __pillar__ \
+        if all(x is None for x in (saltenv, pillarenv)) \
+        else items(saltenv=saltenv, pillarenv=pillarenv)
 
     if merge:
-        ret = salt.utils.traverse_dict_and_list(__pillar__, key, {}, delimiter)
+        if not isinstance(default, dict):
+            raise SaltInvocationError(
+                'default must be a dictionary when merge=True'
+            )
+        ret = salt.utils.traverse_dict_and_list(pillar_dict, key, {}, delimiter)
         if isinstance(ret, collections.Mapping) and \
                 isinstance(default, collections.Mapping):
-            return salt.utils.dictupdate.update(default, ret)
+            default = copy.deepcopy(default)
+            return salt.utils.dictupdate.update(default, ret, merge_lists=opt_merge_lists)
 
-    ret = salt.utils.traverse_dict_and_list(__pillar__,
+    ret = salt.utils.traverse_dict_and_list(pillar_dict,
                                             key,
                                             default,
                                             delimiter)
@@ -88,13 +126,28 @@ def items(*args, **kwargs):
     Contrast with :py:func:`raw` which returns the pillar data that is
     currently loaded into the minion.
 
-    pillar : none
+    pillar
         if specified, allows for a dictionary of pillar data to be made
         available to pillar and ext_pillar rendering. these pillar variables
         will also override any variables of the same name in pillar or
         ext_pillar.
 
         .. versionadded:: 2015.5.0
+
+    pillarenv
+        Pass a specific pillar environment from which to compile pillar data.
+        If not specified, then the minion's :conf_minion:`pillarenv` option is
+        not used, and if that also is not specified then all configured pillar
+        environments will be merged into a single pillar dictionary and
+        returned.
+
+        .. versionadded:: 2016.11.2
+
+    saltenv
+        Included only for compatibility with
+        :conf_minion:`pillarenv_from_saltenv`, and is otherwise ignored.
+
+        .. versionadded:: Nitrogen
 
     CLI Example:
 
@@ -106,12 +159,22 @@ def items(*args, **kwargs):
     if args:
         return item(*args)
 
+    pillarenv = kwargs.get('pillarenv')
+    if pillarenv is None:
+        if __opts__.get('pillarenv_from_saltenv', False):
+            pillarenv = kwargs.get('saltenv') or __opts__['environment']
+        else:
+            pillarenv = __opts__.get('pillarenv')
+
+    opts = copy.copy(__opts__)
+    opts['pillarenv'] = pillarenv
     pillar = salt.pillar.get_pillar(
-        __opts__,
+        opts,
         __grains__,
-        __opts__['id'],
-        __opts__['environment'],
-        pillar=kwargs.get('pillar'))
+        opts['id'],
+        saltenv=pillarenv,
+        pillar=kwargs.get('pillar'),
+        pillarenv=kwargs.get('pillarenv') or __opts__['pillarenv'])
 
     return pillar.compile_pillar()
 
@@ -191,19 +254,36 @@ def item(*args, **kwargs):
 
     Return one or more pillar entries
 
-    pillar : none
-        if specified, allows for a dictionary of pillar data to be made
+    pillar
+        If specified, allows for a dictionary of pillar data to be made
         available to pillar and ext_pillar rendering. these pillar variables
         will also override any variables of the same name in pillar or
         ext_pillar.
 
         .. versionadded:: 2015.5.0
 
+    delimiter
+        Delimiter used to traverse nested dictionaries.
+
+        .. note::
+            This is different from :py:func:`pillar.get
+            <salt.modules.pillar.get>` in that no default value can be
+            specified. :py:func:`pillar.get <salt.modules.pillar.get>` should
+            probably still be used in most cases to retrieve nested pillar
+            values, as it is a bit more flexible. One reason to use this
+            function instead of :py:func:`pillar.get <salt.modules.pillar.get>`
+            however is when it is desirable to retrieve the values of more than
+            one key, since :py:func:`pillar.get <salt.modules.pillar.get>` can
+            only retrieve one key at a time.
+
+        .. versionadded:: 2015.8.0
+
     CLI Examples:
 
     .. code-block:: bash
 
         salt '*' pillar.item foo
+        salt '*' pillar.item foo:bar
         salt '*' pillar.item foo bar baz
     '''
     ret = {}
@@ -357,3 +437,67 @@ def file_exists(path, saltenv=None):
                 return True
 
     return False
+
+
+# Provide a jinja function call compatible get aliased as fetch
+fetch = get
+
+
+def filter_by(lookup_dict,
+              pillar,
+              merge=None,
+              default='default',
+              base=None):
+    '''
+    .. versionadded:: Nitrogen
+
+    Look up the given pillar in a given dictionary and return the result
+
+    :param lookup_dict: A dictionary, keyed by a pillar, containing a value or
+        values relevant to systems matching that pillar. For example, a key
+        could be a pillar for a role and the value could the name of a package
+        on that particular OS.
+
+        The dictionary key can be a globbing pattern. The function will return
+        the corresponding ``lookup_dict`` value where the pilalr value matches
+        the  pattern. For example:
+
+        .. code-block:: bash
+
+            # this will render 'got some salt' if ``role`` begins with 'salt'
+            salt '*' pillar.filter_by '{salt*: got some salt, default: salt is not here}' role
+
+    :param pillar: The name of a pillar to match with the system's pillar. For
+        example, the value of the "role" pillar could be used to pull values
+        from the ``lookup_dict`` dictionary.
+
+        The pillar value can be a list. The function will return the
+        ``lookup_dict`` value for a first found item in the list matching
+        one of the ``lookup_dict`` keys.
+
+    :param merge: A dictionary to merge with the results of the pillar
+        selection from ``lookup_dict``. This allows another dictionary to
+        override the values in the ``lookup_dict``.
+
+    :param default: default lookup_dict's key used if the pillar does not exist
+        or if the pillar value has no match on lookup_dict.  If unspecified
+        the value is "default".
+
+    :param base: A lookup_dict key to use for a base dictionary.  The
+        pillar-selected ``lookup_dict`` is merged over this and then finally
+        the ``merge`` dictionary is merged.  This allows common values for
+        each case to be collected in the base and overridden by the pillar
+        selection dictionary and the merge dictionary.  Default is unset.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' pillar.filter_by '{web: Serve it up, db: I query, default: x_x}' role
+    '''
+    return salt.utils.filter_by(lookup_dict=lookup_dict,
+                                lookup=pillar,
+                                traverse=__pillar__,
+                                merge=merge,
+                                default=default,
+                                base=base)

@@ -19,7 +19,7 @@ import salt.utils
 import salt.ext.six as six
 import salt.utils.event
 from salt._compat import subprocess
-from salt.utils.network import host_to_ip as _host_to_ip
+from salt.utils.network import host_to_ips as _host_to_ips
 
 import os
 import ctypes
@@ -164,7 +164,7 @@ def saltmem(human_readable=False):
     Returns the amount of memory that salt is using
 
     human_readable : False
-        return the value in a nicely formated number
+        return the value in a nicely formatted number
 
     CLI Example:
 
@@ -331,30 +331,32 @@ def master(master=None, connected=True):
 
     # the default publishing port
     port = 4505
-    master_ip = None
+    master_ips = None
+
+    if master:
+        master_ips = _host_to_ips(master)
+
+    if not master_ips:
+        return
 
     if __salt__['config.get']('publish_port') != '':
         port = int(__salt__['config.get']('publish_port'))
 
-    # Check if we have FQDN/hostname defined as master
-    # address and try resolving it first. _remote_port_tcp
-    # only works with IP-addresses.
-    if master is not None:
-        tmp_ip = _host_to_ip(master)
-        if tmp_ip is not None:
-            master_ip = tmp_ip
+    master_connection_status = False
+    connected_ips = _win_remotes_on(port)
 
-    ips = _win_remotes_on(port)
+    # Get connection status for master
+    for master_ip in master_ips:
+        if master_ip in connected_ips:
+            master_connection_status = True
+            break
 
-    if connected:
-        if master_ip not in ips:
-            event = salt.utils.event.get_event(
-                'minion', opts=__opts__, listen=False
-            )
-            event.fire_event({'master': master}, '__master_disconnected')
-    else:
-        if master_ip in ips:
-            event = salt.utils.event.get_event(
-                'minion', opts=__opts__, listen=False
-            )
-            event.fire_event({'master': master}, '__master_connected')
+    # Connection to master is not as expected
+    if master_connection_status is not connected:
+        event = salt.utils.event.get_event('minion', opts=__opts__, listen=False)
+        if master_connection_status:
+            event.fire_event({'master': master}, salt.minion.master_event(type='connected'))
+        else:
+            event.fire_event({'master': master}, salt.minion.master_event(type='disconnected'))
+
+    return master_connection_status

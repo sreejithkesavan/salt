@@ -3,10 +3,17 @@
 # Import Python libs
 from __future__ import absolute_import
 from distutils.version import LooseVersion  # pylint: disable=import-error,no-name-in-module
+import random
+import string
 
 # Import Salt Testing libs
 from salttesting.unit import skipIf, TestCase
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, patch
+from salttesting.mock import (
+    MagicMock,
+    NO_MOCK,
+    NO_MOCK_REASON,
+    patch
+)
 from salttesting.helpers import ensure_in_syspath
 
 ensure_in_syspath('../../')
@@ -14,12 +21,10 @@ ensure_in_syspath('../../')
 # Import Salt libs
 import salt.config
 import salt.loader
+from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 
 # Import 3rd-party libs
 import logging
-
-# Import Mock libraries
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, MagicMock, patch
 
 # pylint: disable=import-error,no-name-in-module,unused-import
 from unit.modules.boto_cloudtrail_test import BotoCloudTrailTestCaseMixin
@@ -99,12 +104,21 @@ if _has_required_boto():
                       StopLoggingTime=None)
 
 
+@skipIf(HAS_BOTO is False, 'The boto module must be installed.')
+@skipIf(_has_required_boto() is False, 'The boto3 module must be greater than'
+                                       ' or equal to version {0}'
+        .format(required_boto3_version))
+@skipIf(NO_MOCK, NO_MOCK_REASON)
 class BotoCloudTrailStateTestCaseBase(TestCase):
     conn = None
 
     # Set up MagicMock to replace the boto3 session
     def setUp(self):
         context.clear()
+        # connections keep getting cached from prior tests, can't find the
+        # correct context object to clear it. So randomize the cache key, to prevent any
+        # cache hits
+        conn_parameters['key'] = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(50))
 
         self.patcher = patch('boto3.session.Session')
         self.addCleanup(self.patcher.stop)
@@ -115,11 +129,6 @@ class BotoCloudTrailStateTestCaseBase(TestCase):
         session_instance.client.return_value = self.conn
 
 
-@skipIf(HAS_BOTO is False, 'The boto module must be installed.')
-@skipIf(_has_required_boto() is False, 'The boto3 module must be greater than'
-                                       ' or equal to version {0}'
-        .format(required_boto3_version))
-@skipIf(NO_MOCK, NO_MOCK_REASON)
 class BotoCloudTrailTestCase(BotoCloudTrailStateTestCaseBase, BotoCloudTrailTestCaseMixin):
     '''
     TestCase for salt.modules.boto_cloudtrail state.module

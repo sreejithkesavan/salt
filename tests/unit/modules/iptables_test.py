@@ -128,7 +128,12 @@ class IptablesTestCase(TestCase):
         # Should allow no-arg jump options
         self.assertEqual(iptables.build_rule(jump='CLUSTERIP',
                                              **{'new': ''}),
-                         '--jump CLUSTERIP --new ')
+                         '--jump CLUSTERIP --new')
+
+        # Should allow no-arg jump options as None
+        self.assertEqual(iptables.build_rule(jump='CT',
+                                             **{'notrack': None}),
+                         '--jump CT --notrack')
 
         # should build match-sets with single string
         self.assertEqual(iptables.build_rule(**{'match-set': 'src flag1,flag2'}),
@@ -150,6 +155,14 @@ class IptablesTestCase(TestCase):
                       'not src2 flag2']
         self.assertEqual(iptables.build_rule(**{'match-set': match_sets}),
                          '-m set --match-set src1 flag -m set ! --match-set src2 flag2')
+
+        # should allow escaped name
+        self.assertEqual(iptables.build_rule(**{'match': 'recent', 'name_': 'SSH'}),
+                         '-m recent --name SSH')
+
+        # should allow empty arguments
+        self.assertEqual(iptables.build_rule(**{'match': 'recent', 'update': None}),
+                         '-m recent --update')
 
         # Should allow the --save jump option to CONNSECMARK
         #self.assertEqual(iptables.build_rule(jump='CONNSECMARK',
@@ -275,7 +288,8 @@ class IptablesTestCase(TestCase):
         '''
         mock = MagicMock(return_value=True)
         with patch.dict(iptables.__salt__, {'cmd.run': mock,
-                                            'file.write': mock}):
+                                            'file.write': mock,
+                                            'config.option': MagicMock(return_value=[])}):
             self.assertTrue(iptables.save(filename='/xyz', family='ipv4'))
 
     # 'check' function tests: 1

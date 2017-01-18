@@ -72,7 +72,7 @@ def _mine_get(load, opts):
             load['tok'] = _auth().gen_token('salt')
         except AttributeError:
             log.error('Mine could not authenticate with master. '
-                      'Mine could not be retreived.'
+                      'Mine could not be retrieved.'
                       )
             return False
     channel = salt.transport.Channel.factory(opts)
@@ -82,9 +82,9 @@ def _mine_get(load, opts):
 
 def update(clear=False):
     '''
-    Execute the configured functions and send the data back up to the master
+    Execute the configured functions and send the data back up to the master.
     The functions to be executed are merged from the master config, pillar and
-    minion config under the option "function_cache":
+    minion config under the option `mine_functions`:
 
     .. code-block:: yaml
 
@@ -136,7 +136,7 @@ def update(clear=False):
             continue
     if __opts__['file_client'] == 'local':
         if not clear:
-            old = __salt__['data.getval']('mine_cache')
+            old = __salt__['data.get']('mine_cache')
             if isinstance(old, dict):
                 old.update(data)
                 data = old
@@ -190,7 +190,7 @@ def send(func, *args, **kwargs):
                   .format(mine_func, exc))
         return False
     if __opts__['file_client'] == 'local':
-        old = __salt__['data.getval']('mine_cache')
+        old = __salt__['data.get']('mine_cache')
         if isinstance(old, dict):
             old.update(data)
             data = old
@@ -203,20 +203,24 @@ def send(func, *args, **kwargs):
     return _mine_send(load, __opts__)
 
 
-def get(tgt, fun, expr_form='glob', exclude_minion=False):
+def get(tgt,
+        fun,
+        tgt_type='glob',
+        exclude_minion=False,
+        expr_form=None):
     '''
-    Get data from the mine based on the target, function and expr_form
+    Get data from the mine based on the target, function and tgt_type
 
     Targets can be matched based on any standard matching system that can be
-    matched on the master via these keywords::
+    matched on the master via these keywords:
 
-        glob
-        pcre
-        grain
-        grain_pcre
-        compound
-        pillar
-        pillar_pcre
+    - glob
+    - pcre
+    - grain
+    - grain_pcre
+    - compound
+    - pillar
+    - pillar_pcre
 
     Note that all pillar matches, whether using the compound matching system or
     the pillar matching system, will be exact matches, with globbing disabled.
@@ -237,7 +241,7 @@ def get(tgt, fun, expr_form='glob', exclude_minion=False):
         This execution module is intended to be executed on minions.
         Master-side operations such as Pillar or Orchestrate that require Mine
         data should use the :py:mod:`Mine Runner module <salt.runners.mine>`
-        instead; it can be invoked from an SLS file using the
+        instead; it can be invoked from a Pillar SLS file using the
         :py:func:`saltutil.runner <salt.modules.saltutil.runner>` module. For
         example:
 
@@ -248,6 +252,17 @@ def get(tgt, fun, expr_form='glob', exclude_minion=False):
                 fun='network.ip_addrs',
                 tgt_type='glob') %}
     '''
+    # remember to remove the expr_form argument from this function when
+    # performing the cleanup on this deprecation.
+    if expr_form is not None:
+        salt.utils.warn_until(
+            'Fluorine',
+            'the target type should be passed using the \'tgt_type\' '
+            'argument instead of \'expr_form\'. Support for using '
+            '\'expr_form\' will be removed in Salt Fluorine.'
+        )
+        tgt_type = expr_form
+
     if __opts__['file_client'] == 'local':
         ret = {}
         is_target = {'glob': __salt__['match.glob'],
@@ -259,9 +274,9 @@ def get(tgt, fun, expr_form='glob', exclude_minion=False):
                      'compound': __salt__['match.compound'],
                      'pillar': __salt__['match.pillar'],
                      'pillar_pcre': __salt__['match.pillar_pcre'],
-                     }[expr_form](tgt)
+                     }[tgt_type](tgt)
         if is_target:
-            data = __salt__['data.getval']('mine_cache')
+            data = __salt__['data.get']('mine_cache')
             if isinstance(data, dict) and fun in data:
                 ret[__opts__['id']] = data[fun]
         return ret
@@ -270,7 +285,7 @@ def get(tgt, fun, expr_form='glob', exclude_minion=False):
             'id': __opts__['id'],
             'tgt': tgt,
             'fun': fun,
-            'expr_form': expr_form,
+            'tgt_type': tgt_type,
     }
     ret = _mine_get(load, __opts__)
     if exclude_minion:
@@ -290,7 +305,7 @@ def delete(fun):
         salt '*' mine.delete 'network.interfaces'
     '''
     if __opts__['file_client'] == 'local':
-        data = __salt__['data.getval']('mine_cache')
+        data = __salt__['data.get']('mine_cache')
         if isinstance(data, dict) and fun in data:
             del data[fun]
         return __salt__['data.update']('mine_cache', data)
@@ -419,3 +434,42 @@ def get_docker(interfaces=None, cidrs=None, with_container_id=False):
                         containers.append(value)
 
     return proxy_lists
+
+
+def valid():
+    '''
+    List valid entries in mine configuration.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' mine.valid
+    '''
+    m_data = __salt__['config.merge']('mine_functions', {})
+    # If we don't have any mine functions configured, then we should just bail out
+    if not m_data:
+        return
+
+    data = {}
+    for func in m_data:
+        if m_data[func] and isinstance(m_data[func], dict):
+            mine_func = m_data[func].pop('mine_function', func)
+            if not _mine_function_available(mine_func):
+                continue
+            data[func] = {mine_func: m_data[func]}
+        elif m_data[func] and isinstance(m_data[func], list):
+            mine_func = func
+            if isinstance(m_data[func][0], dict) and 'mine_function' in m_data[func][0]:
+                mine_func = m_data[func][0]['mine_function']
+                m_data[func].pop(0)
+
+            if not _mine_function_available(mine_func):
+                continue
+            data[func] = {mine_func: m_data[func]}
+        else:
+            if not _mine_function_available(func):
+                continue
+            data[func] = m_data[func]
+
+    return data

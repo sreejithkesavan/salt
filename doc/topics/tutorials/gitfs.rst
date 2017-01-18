@@ -7,7 +7,7 @@ Git Fileserver Backend Walkthrough
 .. note::
 
     This walkthrough assumes basic knowledge of Salt. To get up to speed, check
-    out the :doc:`Salt Walkthrough </topics/tutorials/walkthrough>`.
+    out the :ref:`Salt Walkthrough <tutorial-salt-walk-through>`.
 
 The gitfs backend allows Salt to serve files from git repositories. It can be
 enabled by adding ``git`` to the :conf_master:`fileserver_backend` list, and
@@ -15,6 +15,11 @@ configuring one or more repositories in :conf_master:`gitfs_remotes`.
 
 Branches and tags become Salt fileserver environments.
 
+.. note::
+    Branching and tagging can result in a lot of potentially-conflicting
+    :ref:`top files <states-top>`, for this reason it may be useful to set
+    :conf_minion:`top_file_merging_strategy` to ``same`` in the minions' config
+    files if the top files are being managed in a GitFS repo.
 
 .. _gitfs-dependencies:
 
@@ -63,26 +68,42 @@ be used to install it:
 
 If pygit2_ is not packaged for the platform on which the Master is running, the
 pygit2_ website has installation instructions here__. Keep in mind however that
-following these instructions will install libgit2 and pygit2_ without system
+following these instructions will install libgit2_ and pygit2_ without system
 packages. Additionally, keep in mind that :ref:`SSH authentication in pygit2
 <pygit2-authentication-ssh>` requires libssh2_ (*not* libssh) development
-libraries to be present before libgit2 is built. On some distros (debian based)
-``pkg-config`` is also required to link libgit2 with libssh2.
+libraries to be present before libgit2_ is built. On some Debian-based distros
+``pkg-config`` is also required to link libgit2_ with libssh2.
+.. note::
+    If you are receiving the error "Unsupported URL Protocol" in the Salt Master
+    log when making a connection using SSH, review the libssh2 details listed 
+    above.
+
+Additionally, version 0.21.0 of pygit2 introduced a dependency on python-cffi_,
+which in turn depends on newer releases of libffi_. Upgrading libffi_ is not
+advisable as several other applications depend on it, so on older LTS linux
+releases pygit2_ 0.20.3 and libgit2_ 0.20.0 is the recommended combination.
+While these are not packaged in the official repositories for Debian and
+Ubuntu, SaltStack is actively working on adding packages for these to our
+repositories_. The progress of this effort can be tracked here__.
 
 .. warning::
     pygit2_ is actively developed and :ref:`frequently makes
     non-backwards-compatible API changes <pygit2-version-policy>`, even in
     minor releases. It is not uncommon for pygit2_ upgrades to result in errors
     in Salt. Please take care when upgrading pygit2_, and pay close attention
-    to the :ref:`changelog <pygit2-changelog>`, keeping an eye out for API
-    changes. Errors can be reported on the :ref:`SaltStack issue tracker
-    <saltstack-issue-tracker>`.
+    to the changelog_, keeping an eye out for API changes. Errors can be
+    reported on the :ref:`SaltStack issue tracker <saltstack-issue-tracker>`.
 
 .. _pygit2-version-policy: http://www.pygit2.org/install.html#version-numbers
-.. _pygit2-changelog: https://github.com/libgit2/pygit2#changelog
+.. _changelog: https://github.com/libgit2/pygit2#changelog
 .. _saltstack-issue-tracker: https://github.com/saltstack/salt/issues
 .. __: http://www.pygit2.org/install.html
+.. _libgit2: https://libgit2.github.com/
 .. _libssh2: http://www.libssh2.org/
+.. _python-cffi: https://pypi.python.org/pypi/cffi
+.. _libffi: http://sourceware.org/libffi/
+.. _repositories: https://repo.saltstack.com
+.. __: https://github.com/saltstack/salt-pack/issues/70
 
 GitPython
 ---------
@@ -120,6 +141,21 @@ install GitPython`` (or ``easy_install GitPython``) as root.
     will ignore this and simply install the version from the cache directory.
     Therefore, it may be necessary to delete the GitPython directory from the
     build cache in order to ensure that the specified version is installed.
+
+.. warning::
+
+    GitPython_ 2.0.9 and newer is not compatible with Python 2.6. If installing
+    GitPython_ using pip on a machine running Python 2.6, make sure that a
+    version earlier than 2.0.9 is installed. This can be done on the CLI by
+    running ``pip install 'GitPython<2.0.9'``, or in a :py:func:`pip.installed
+    <salt.states.pip_state.installed>` state using the following SLS:
+
+    .. code-block:: yaml
+
+        GitPython:
+          pip.installed:
+            - name: 'GitPython < 2.0.9'
+
 
 Dulwich
 -------
@@ -313,7 +349,12 @@ tremendous amount of customization. Here's some example usage:
       - https://foo.com/foo.git
       - https://foo.com/bar.git:
         - root: salt
-        - mountpoint: salt://foo/bar/baz
+        - mountpoint: salt://bar
+        - base: salt-base
+      - https://foo.com/bar.git:
+        - name: second_bar_repo
+        - root: other/salt
+        - mountpoint: salt://other/bar
         - base: salt-base
       - http://foo.com/baz.git:
         - root: salt/states
@@ -330,26 +371,131 @@ tremendous amount of customization. Here's some example usage:
        with a colon.
 
     2. Per-remote configuration parameters are named like the global versions,
-       with the ``gitfs_`` removed from the beginning.
+       with the ``gitfs_`` removed from the beginning. The exception being the
+       ``name`` parameter which is only available to per-remote configurations.
 
 In the example configuration above, the following is true:
 
-1. The first and third gitfs remotes will use the ``develop`` branch/tag as the
-   ``base`` environment, while the second one will use the ``salt-base``
+1. The first and fourth gitfs remotes will use the ``develop`` branch/tag as the
+   ``base`` environment, while the second and third will use the ``salt-base``
    branch/tag as the ``base`` environment.
 
 2. The first remote will serve all files in the repository. The second
    remote will only serve files from the ``salt`` directory (and its
-   subdirectories), while the third remote will only serve files from the
-   ``salt/states`` directory (and its subdirectories).
+   subdirectories). The third remote will only server files from the
+   ``other/salt`` directory (and its subdirectories), while the fourth remote
+   will only serve files from the ``salt/states`` directory (and its
+   subdirectories).
 
-3. The files from the second remote will be located under
-   ``salt://foo/bar/baz``, while the files from the first and third remotes
-   will be located under the root of the Salt fileserver namespace
-   (``salt://``).
+3. The first and fourth remotes will have files located under the root of the
+   Salt fileserver namespace (``salt://``). The files from the second remote
+   will be located under ``salt://bar``, while the files from the third remote
+   will be located under ``salt://other/bar``.
 
-4. The third remote overrides the default behavior of :ref:`not authenticating to
-   insecure (non-HTTPS) remotes <gitfs-insecure-auth>`.
+4. The second and third remotes reference the same repository and unique names
+   need to be declared for duplicate gitfs remotes.
+
+5. The fourth remote overrides the default behavior of :ref:`not authenticating
+   to insecure (non-HTTPS) remotes <gitfs-insecure-auth>`.
+
+
+.. _gitfs-per-saltenv-config:
+
+Per-Saltenv Configuration Parameters
+====================================
+
+.. versionadded:: 2016.11.0
+
+For more granular control, Salt allows the following three things to be
+overridden for individual saltenvs within a given repo:
+
+- The :ref:`mountpoint <gitfs-walkthrough-mountpoint>`
+- The :ref:`root <gitfs-walkthrough-root>`
+- The branch/tag to be used for a given saltenv
+
+Here is an example:
+
+.. code-block:: yaml
+
+    gitfs_root: salt
+
+    gitfs_saltenv:
+      - dev:
+        - mountpoint: salt://gitfs-dev
+        - ref: develop
+
+    gitfs_remotes:
+      - https://foo.com/bar.git:
+        - saltenv:
+          - staging:
+            - ref: qa
+            - mountpoint: salt://bar-staging
+          - dev:
+            - ref: development
+      - https://foo.com/baz.git:
+        - saltenv:
+          - staging:
+            - mountpoint: salt://baz-staging
+
+Given the above configuration, the following is true:
+
+1. For all gitfs remotes, files for the ``dev`` saltenv will be located under
+   ``salt://gitfs-dev``.
+
+2. For the ``dev`` saltenv, files from the first remote will be sourced from
+   the ``development`` branch, while files from the second remote will be
+   sourced from the ``develop`` branch.
+
+3. For the ``staging`` saltenv, files from the first remote will be located
+   under ``salt://bar-staging``, while files from the second remote will be
+   located under ``salt://baz-staging``.
+
+4. For all gitfs remotes, and in all saltenvs, files will be served from the
+   ``salt`` directory (and its subdirectories).
+
+
+Configuration Order of Precedence
+=================================
+
+The order of precedence for gitfs configuration is as follows (each level
+overrides all levels below it):
+
+1. Per-saltenv configuration (defined under a per-remote ``saltenv``
+   param)
+
+   .. code-block:: yaml
+
+       gitfs_remotes:
+         - https://foo.com/bar.git:
+           - saltenv:
+             - dev:
+               - mountpoint: salt://bar
+
+2. Global per-saltenv configuration (defined in :conf_master:`gitfs_saltenv`)
+
+   .. code-block:: yaml
+
+       gitfs_saltenv:
+         - saltenv:
+           - dev:
+             - mountpoint: salt://bar
+
+3. Per-remote configuration parameter
+
+   .. code-block:: yaml
+
+       gitfs_remotes:
+         - https://foo.com/bar.git:
+           - mountpoint: salt://bar
+
+4. Global configuration parameter
+
+   .. code-block:: yaml
+
+       gitfs_mountpoint: salt://bar
+
+
+.. _gitfs-walkthrough-root:
 
 Serving from a Subdirectory
 ===========================
@@ -389,6 +535,8 @@ The root can also be configured on a :ref:`per-remote basis
 <gitfs-per-remote-config>`.
 
 
+.. _gitfs-walkthrough-mountpoint:
+
 Mountpoints
 ===========
 
@@ -402,7 +550,7 @@ of the Salt fileserver.
 Before the addition of this feature, if a file being served up via gitfs was
 deeply nested within the root directory (for example,
 ``salt://webapps/foo/files/foo.conf``, it would be necessary to ensure that the
-file was properly located in the remote repository, and that all of the the
+file was properly located in the remote repository, and that all of the
 parent directories were present (for example, the directories
 ``webapps/foo/files/`` would need to exist at the root of the repository).
 
@@ -669,7 +817,7 @@ server via SSH:
 
 .. code-block:: bash
 
-    $ su
+    $ su -
     Password:
     # ssh github.com
     The authenticity of host 'github.com (192.30.252.128)' can't be established.
@@ -685,11 +833,11 @@ Verifying the Fingerprint
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 To verify that the correct fingerprint was added, it is a good idea to look it
-up. One way to do this is to use nmap:
+up. One way to do this is to use ``nmap``:
 
 .. code-block:: bash
 
-    $ nmap github.com --script ssh-hostkey
+    $ nmap -p 22 github.com --script ssh-hostkey
 
     Starting Nmap 5.51 ( http://nmap.org ) at 2014-08-18 17:47 CDT
     Nmap scan report for github.com (192.30.252.129)
@@ -705,13 +853,24 @@ up. One way to do this is to use nmap:
 
     Nmap done: 1 IP address (1 host up) scanned in 28.78 seconds
 
-Another way is to check one's own known_hosts file, using this one-liner:
+Another way is to check one's own ``known_hosts`` file, using this one-liner:
 
 .. code-block:: bash
 
-    $ ssh-keygen -l -f /dev/stdin <<<`ssh-keyscan -t rsa github.com 2>/dev/null` | awk '{print $2}'
+    $ ssh-keygen -l -f /dev/stdin <<<`ssh-keyscan github.com 2>/dev/null` | awk '{print $2}'
     16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48
 
+.. warning::
+    AWS tracks usage of nmap and may flag it as abuse. On AWS hosts, the
+    ``ssh-keygen`` method is recommended for host key verification.
+
+.. note::
+    As of `OpenSSH 6.8`_ the SSH fingerprint is now shown as a base64-encoded
+    SHA256 checksum of the host key. So, instead of the fingerprint looking
+    like ``16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48``, it would look
+    like ``SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8``.
+
+.. _`OpenSSH 6.8`: http://www.openssh.com/txt/release-6.8
 
 Refreshing gitfs Upon Push
 ==========================
@@ -738,13 +897,30 @@ steps to this process:
          - 'salt/fileserver/gitfs/update':
            - /srv/reactor/update_fileserver.sls
 
-3. On the git server, add a `post-receive hook`_ with the following contents:
+3. On the git server, add a `post-receive hook`_
+
+   a. If the user executing `git push` is the same as the minion user, use the following hook:
+
+     .. code-block:: bash
+
+         #!/usr/bin/env sh
+         salt-call event.fire_master update salt/fileserver/gitfs/update
+
+   b. To enable other git users to run the hook after a `push`, use sudo in the hook script:
+
+     .. code-block:: bash
+
+         #!/usr/bin/env sh
+         sudo -u root salt-call event.fire_master update salt/fileserver/gitfs/update
+
+4. If using sudo in the git hook (above), the policy must be changed to permit all users to fire the event.
+   Add the following policy to the sudoers file on the git server.
 
    .. code-block:: bash
 
-       #!/usr/bin/env sh
-
-       salt-call event.fire_master update salt/fileserver/gitfs/update
+       Cmnd_Alias SALT_GIT_HOOK = /bin/salt-call event.fire_master update salt/fileserver/gitfs/update
+       Defaults!SALT_GIT_HOOK !requiretty
+       ALL ALL=(root) NOPASSWD: SALT_GIT_HOOK
 
 The ``update`` argument right after :mod:`event.fire_master
 <salt.modules.event.fire_master>` in this example can really be anything, as it
@@ -753,6 +929,9 @@ by this reactor.
 
 Similarly, the tag name ``salt/fileserver/gitfs/update`` can be replaced by
 anything, so long as the usage is consistent.
+
+The ``root`` user name in the hook script and sudo policy should be changed to match the user under which 
+the minion is running.
 
 .. _`post-receive hook`: http://www.git-scm.com/book/en/Customizing-Git-Git-Hooks#Server-Side-Hooks
 
@@ -779,8 +958,8 @@ for documentation.
 Why aren't my custom modules/states/etc. syncing to my Minions?
 ===============================================================
 
-In versions 0.16.3 and older, when using the :doc:`git fileserver backend
-</topics/tutorials/gitfs>`, certain versions of GitPython may generate errors
+In versions 0.16.3 and older, when using the :mod:`git fileserver backend
+<salt.fileserver.gitfs>`, certain versions of GitPython may generate errors
 when fetching, which Salt fails to catch. While not fatal to the fetch process,
 these interrupt the fileserver update that takes place before custom types are
 synced, and thus interrupt the sync itself. Try disabling the git fileserver

@@ -18,6 +18,8 @@ using the existing Libcloud driver for Dimension Data.
       region: dd-na
       driver: dimensiondata
 
+:maintainer: Anthony Shaw <anthonyshaw@apache.org>
+:depends: libcloud >= 1.2.1
 '''
 
 # Import python libs
@@ -35,7 +37,9 @@ try:
     from libcloud.loadbalancer.base import Member
     from libcloud.loadbalancer.types import Provider as Provider_lb
     from libcloud.loadbalancer.providers import get_driver as get_driver_lb
-
+    # See https://github.com/saltstack/salt/issues/32743
+    import libcloud.security
+    libcloud.security.CA_CERTS_PATH.append('/etc/ssl/certs/YaST-CA.pem')
     HAS_LIBCLOUD = True
 except ImportError:
     HAS_LIBCLOUD = False
@@ -48,6 +52,7 @@ import salt.utils
 
 # Import salt.cloud libs
 from salt.cloud.libcloudfuncs import *  # pylint: disable=redefined-builtin,wildcard-import,unused-wildcard-import
+from salt.utils import namespaced_function
 import salt.utils.cloud
 import salt.config as config
 from salt.exceptions import (
@@ -62,6 +67,24 @@ try:
 except ImportError:
     HAS_NETADDR = False
 
+
+# Some of the libcloud functions need to be in the same namespace as the
+# functions defined in the module, so we create new function objects inside
+# this module namespace
+get_size = namespaced_function(get_size, globals())
+get_image = namespaced_function(get_image, globals())
+avail_locations = namespaced_function(avail_locations, globals())
+avail_images = namespaced_function(avail_images, globals())
+avail_sizes = namespaced_function(avail_sizes, globals())
+script = namespaced_function(script, globals())
+destroy = namespaced_function(destroy, globals())
+reboot = namespaced_function(reboot, globals())
+list_nodes = namespaced_function(list_nodes, globals())
+list_nodes_full = namespaced_function(list_nodes_full, globals())
+list_nodes_select = namespaced_function(list_nodes_select, globals())
+show_instance = namespaced_function(show_instance, globals())
+get_node = namespaced_function(get_node, globals())
+
 # Get logging started
 log = logging.getLogger(__name__)
 
@@ -70,7 +93,7 @@ __virtualname__ = 'dimensiondata'
 
 def __virtual__():
     '''
-    Set up the libcloud functions and check for GCE configurations.
+    Set up the libcloud functions and check for dimensiondata configurations.
     '''
     if get_configured_provider() is False:
         return False
@@ -124,20 +147,16 @@ def create(vm_):
     except AttributeError:
         pass
 
-    # Since using "provider: <provider-engine>" is deprecated, alias provider
-    # to use driver: "driver: <provider-engine>"
-    if 'provider' in vm_:
-        vm_['driver'] = vm_.pop('provider')
-
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -149,12 +168,29 @@ def create(vm_):
         location = conn.ex_get_location_by_id(vm_['location'])
         images = conn.list_images(location=location)
         image = [x for x in images if x.id == vm_['image']][0]
-        networks = conn.ex_list_network_domains(location=location)
-        network_domain = [y for y in networks if y.name ==
-                          vm_['network_domain']][0]
-        # Use the first VLAN in the network domain
-        vlan = conn.ex_list_vlans(location=location,
-                                  network_domain=network_domain)[0]
+        network_domains = conn.ex_list_network_domains(location=location)
+        try:
+            network_domain = [y for y in network_domains
+                              if y.name == vm_['network_domain']][0]
+        except IndexError:
+            network_domain = conn.ex_create_network_domain(
+                location=location,
+                name=vm_['network_domain'],
+                plan='ADVANCED',
+                description=''
+            )
+
+        try:
+            vlan = [y for y in conn.ex_list_vlans(
+                location=location,
+                network_domain=network_domain)
+                    if y.name == vm_['vlan']][0]
+        except (IndexError, KeyError):
+            # Use the first VLAN in the network domain
+            vlan = conn.ex_list_vlans(
+                location=location,
+                network_domain=network_domain)[0]
+
         kwargs = {
             'name': vm_['name'],
             'image': image,
@@ -290,15 +326,16 @@ def create(vm_):
         )
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -306,10 +343,12 @@ def create(vm_):
 
 
 def create_lb(kwargs=None, call=None):
-    '''
+    r'''
     Create a load-balancer configuration.
     CLI Example:
+
     .. code-block:: bash
+
         salt-cloud -f create_lb dimensiondata \
             name=dev-lb port=80 protocol=http \
             members=w1,w2,w3 algorithm=ROUND_ROBIN
@@ -370,11 +409,12 @@ def create_lb(kwargs=None, call=None):
     log.debug('Network Domain: %s', network_domain.id)
     lb_conn.ex_set_current_network_domain(network_domain.id)
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'create load_balancer',
         'salt/cloud/loadbalancer/creating',
-        kwargs,
+        args=kwargs,
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -382,11 +422,12 @@ def create_lb(kwargs=None, call=None):
         name, port, protocol, algorithm, members
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created load_balancer',
         'salt/cloud/loadbalancer/created',
-        kwargs,
+        args=kwargs,
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
     return _expand_balancer(lb)
@@ -434,10 +475,14 @@ def ssh_interface(vm_):
 def stop(name, call=None):
     '''
     Stop a VM in DimensionData.
-    name
+
+    name:
         The name of the VM to stop.
+
     CLI Example:
+
     .. code-block:: bash
+
         salt-cloud -a stop vm_name
     '''
     conn = get_conn()
@@ -453,10 +498,14 @@ def stop(name, call=None):
 def start(name, call=None):
     '''
     Stop a VM in DimensionData.
-    name
+
+    :param str name:
         The name of the VM to stop.
+
     CLI Example:
+
     .. code-block:: bash
+
         salt-cloud -a stop vm_name
     '''
 

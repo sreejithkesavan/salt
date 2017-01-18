@@ -5,6 +5,7 @@
 '''
 # Import python libs
 from __future__ import absolute_import
+import json
 import tornado.stack_context
 import tornado.gen
 from tornado.testing import AsyncTestCase, gen_test
@@ -104,7 +105,7 @@ class ContextDictTests(AsyncTestCase):
 
         wait_iterator = tornado.gen.WaitIterator(*futures)
         while not wait_iterator.done():
-            r = yield next(wait_iterator)
+            r = yield wait_iterator.next()  # pylint: disable=incompatible-py3-code
             self.assertEqual(r[0], r[1])  # verify that the global value remails
             self.assertEqual(r[2], r[3])  # verify that the override sticks locally
             self.assertEqual(r[3], r[4])  # verify that the override sticks across coroutines
@@ -185,3 +186,13 @@ class NamespacedDictWrapperTests(TestCase):
         self._dict['prefix'] = {'foo': {'bar': 'baz'}}
         w = NamespacedDictWrapper(self._dict, ('prefix', 'foo'))
         self.assertEqual(w['bar'], 'baz')
+
+    def test_json_dumps_single_key(self):
+        self._dict['prefix'] = {'foo': {'bar': 'baz'}}
+        w = NamespacedDictWrapper(self._dict, 'prefix')
+        self.assertEqual(json.dumps(w), '{"foo": {"bar": "baz"}}')
+
+    def test_json_dumps_multiple_key(self):
+        self._dict['prefix'] = {'foo': {'bar': 'baz'}}
+        w = NamespacedDictWrapper(self._dict, ('prefix', 'foo'))
+        self.assertEqual(json.dumps(w), '{"bar": "baz"}')

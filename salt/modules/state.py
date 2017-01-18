@@ -32,6 +32,7 @@ import salt.utils
 import salt.utils.jid
 import salt.utils.url
 from salt.exceptions import SaltInvocationError
+from salt.runners.state import orchestrate as _orchestrate
 
 # Import 3rd-party libs
 import salt.ext.six as six
@@ -47,7 +48,6 @@ __outputter__ = {
     'highstate': 'highstate',
     'template': 'highstate',
     'template_str': 'highstate',
-    'apply': 'highstate',
     'apply_': 'highstate',
     'request': 'highstate',
     'check_request': 'highstate',
@@ -58,6 +58,20 @@ __func_alias__ = {
     'apply_': 'apply'
 }
 log = logging.getLogger(__name__)
+
+# Define the module's virtual name
+__virtualname__ = 'state'
+
+
+def __virtual__():
+    '''
+    Set the virtualname
+    '''
+    # Update global namespace with functions that are cloned in this module
+    global _orchestrate
+    _orchestrate = salt.utils.namespaced_function(_orchestrate, globals())
+
+    return __virtualname__
 
 
 def _filter_running(runnings):
@@ -108,11 +122,78 @@ def _wait(jid):
         states = _prior_running_states(jid)
 
 
+def _snapper_pre(opts, jid):
+    '''
+    Create a snapper pre snapshot
+    '''
+    snapper_pre = None
+    try:
+        if not opts['test'] and __opts__.get('snapper_states'):
+            # Run the snapper pre snapshot
+            snapper_pre = __salt__['snapper.create_snapshot'](
+                    config=__opts__.get('snapper_states_config', 'root'),
+                    snapshot_type='pre',
+                    description='Salt State run for jid {0}'.format(jid),
+                    __pub_jid=jid)
+    except Exception:
+        log.error('Failed to create snapper pre snapshot for jid: {0}'.format(jid))
+    return snapper_pre
+
+
+def _snapper_post(opts, jid, pre_num):
+    '''
+    Create the post states snapshot
+    '''
+    try:
+        if not opts['test'] and __opts__.get('snapper_states') and pre_num:
+            # Run the snapper pre snapshot
+            __salt__['snapper.create_snapshot'](
+                    config=__opts__.get('snapper_states_config', 'root'),
+                    snapshot_type='post',
+                    pre_number=pre_num,
+                    description='Salt State run for jid {0}'.format(jid),
+                    __pub_jid=jid)
+    except Exception:
+        log.error('Failed to create snapper pre snapshot for jid: {0}'.format(jid))
+
+
+def orchestrate(mods,
+                saltenv='base',
+                test=None,
+                exclude=None,
+                pillar=None,
+                pillarenv=None):
+    '''
+    .. versionadded:: 2016.11.0
+
+    Execute the orchestrate runner from a masterless minion.
+
+    .. seealso:: More Orchestrate documentation
+
+        * :ref:`Full Orchestrate Tutorial <orchestrate-runner>`
+        * :py:mod:`Docs for the ``salt`` state module <salt.states.saltmod>`
+
+    CLI Examples:
+
+    .. code-block:: bash
+
+        salt-call --local state.orchestrate webserver
+        salt-call --local state.orchestrate webserver saltenv=dev test=True
+        salt-call --local state.orchestrate webserver saltenv=dev pillarenv=aws
+    '''
+    return _orchestrate(mods=mods,
+                        saltenv=saltenv,
+                        test=test,
+                        exclude=exclude,
+                        pillar=pillar,
+                        pillarenv=pillarenv)
+
+
 def running(concurrent=False):
     '''
-    Return a list of strings that contain state return data if a state function is
-    already running. This function is used to prevent multiple state calls from being
-    run at the same time.
+    Return a list of strings that contain state return data if a state function
+    is already running. This function is used to prevent multiple state calls
+    from being run at the same time.
 
     CLI Example:
 
@@ -147,7 +228,11 @@ def _prior_running_states(jid):
     ret = []
     active = __salt__['saltutil.is_running']('state.*')
     for data in active:
-        if int(data['jid']) < int(jid):
+        try:
+            data_jid = int(data['jid'])
+        except ValueError:
+            continue
+        if data_jid < int(jid):
             ret.append(data)
     return ret
 
@@ -160,7 +245,7 @@ def _check_queue(queue, kwargs):
     if queue:
         _wait(kwargs.get('__pub_jid'))
     else:
-        conflict = running()
+        conflict = running(concurrent=kwargs.get('concurrent', False))
         if conflict:
             __context__['retcode'] = 1
             return conflict
@@ -179,7 +264,9 @@ def _get_opts(localconfig=None):
 def low(data, queue=False, **kwargs):
     '''
     Execute a single low data call
-    This function is mostly intended for testing the state system
+
+    This function is mostly intended for testing the state system and is not
+    likely to be needed in everyday usage.
 
     CLI Example:
 
@@ -206,10 +293,27 @@ def low(data, queue=False, **kwargs):
     return ret
 
 
-def high(data, test=False, queue=False, **kwargs):
+def _get_test_value(test=None, **kwargs):
+    '''
+    Determine the correct value for the test flag.
+    '''
+    ret = True
+    if test is None:
+        if salt.utils.test_mode(test=test, **kwargs):
+            ret = True
+        else:
+            ret = __opts__.get('test', None)
+    else:
+        ret = test
+    return ret
+
+
+def high(data, test=None, queue=False, **kwargs):
     '''
     Execute the compound calls stored in a single set of high data
-    This function is mostly intended for testing the state system
+
+    This function is mostly intended for testing the state system and is not
+    likely to be needed in everyday usage.
 
     CLI Example:
 
@@ -222,12 +326,7 @@ def high(data, test=False, queue=False, **kwargs):
         return conflict
     opts = _get_opts(kwargs.get('localconfig'))
 
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    elif test is not None:
-        opts['test'] = test
-    else:
-        opts['test'] = __opts__.get('test', None)
+    opts['test'] = _get_test_value(test, **kwargs)
 
     pillar = kwargs.get('pillar')
     pillar_enc = kwargs.get('pillar_enc')
@@ -239,10 +338,10 @@ def high(data, test=False, queue=False, **kwargs):
             'is specified.'
         )
     try:
-        st_ = salt.state.State(__opts__, pillar, pillar_enc=pillar_enc, proxy=__proxy__,
+        st_ = salt.state.State(opts, pillar, pillar_enc=pillar_enc, proxy=__proxy__,
                 context=__context__)
     except NameError:
-        st_ = salt.state.State(__opts__, pillar, pillar_enc=pillar_enc)
+        st_ = salt.state.State(opts, pillar, pillar_enc=pillar_enc)
 
     ret = st_.call_high(data)
     _set_retcode(ret)
@@ -267,7 +366,7 @@ def template(tem, queue=False, **kwargs):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -318,17 +417,130 @@ def apply_(mods=None,
     '''
     .. versionadded:: 2015.5.0
 
-    Apply states! This function will call highstate or state.sls based on the
-    arguments passed in, state.apply is intended to be the main gateway for
-    all state executions.
+    This function will call :mod:`state.highstate
+    <salt.modules.state.highstate>` or :mod:`state.sls
+    <salt.modules.state.sls>` based on the arguments passed to this function.
+    It exists as a more intuitive way of applying states.
 
-    CLI Example:
+    .. rubric:: APPLYING ALL STATES CONFIGURED IN TOP.SLS (A.K.A. :ref:`HIGHSTATE <running-highstate>`)
+
+    To apply all configured states, simply run ``state.apply``:
 
     .. code-block:: bash
 
         salt '*' state.apply
+
+    The following additional arguments are also accepted when applying all
+    states configured in top.sls:
+
+    test
+        Run states in test-only (dry-run) mode
+
+    pillar
+        Custom Pillar values, passed as a dictionary of key-value pairs
+
+        .. code-block:: bash
+
+            salt '*' state.apply test pillar='{"foo": "bar"}'
+
+        .. note::
+            Values passed this way will override Pillar values set via
+            ``pillar_roots`` or an external Pillar source.
+
+    queue : False
+        Instead of failing immediately when another state run is in progress,
+        queue the new state run to begin running once the other has finished.
+
+        This option starts a new thread for each queued state run, so use this
+        option sparingly.
+
+    localconfig
+        Optionally, instead of using the minion config, load minion opts from
+        the file specified by this argument, and then merge them with the
+        options from the minion config. This functionality allows for specific
+        states to be run with their own custom minion configuration, including
+        different pillars, file_roots, etc.
+
+        .. code-block:: bash
+
+            salt '*' state.apply localconfig=/path/to/minion.yml
+
+
+    .. rubric:: APPLYING INDIVIDUAL SLS FILES (A.K.A. :py:func:`STATE.SLS <salt.modules.state.sls>`)
+
+    To apply individual SLS files, pass them as a comma-separated list:
+
+    .. code-block:: bash
+
+        # Run the states configured in salt://test.sls (or salt://test/init.sls)
         salt '*' state.apply test
+        # Run the states configured in salt://test.sls (or salt://test/init.sls)
+        # and salt://pkgs.sls (or salt://pkgs/init.sls).
         salt '*' state.apply test,pkgs
+
+    The following additional arguments are also accepted when applying
+    individual SLS files:
+
+    test
+        Run states in test-only (dry-run) mode
+
+    pillar
+        Custom Pillar values, passed as a dictionary of key-value pairs
+
+        .. code-block:: bash
+
+            salt '*' state.apply test pillar='{"foo": "bar"}'
+
+        .. note::
+            Values passed this way will override Pillar values set via
+            ``pillar_roots`` or an external Pillar source.
+
+    queue : False
+        Instead of failing immediately when another state run is in progress,
+        queue the new state run to begin running once the other has finished.
+
+        This option starts a new thread for each queued state run, so use this
+        option sparingly.
+
+    concurrent : False
+        Execute state runs concurrently instead of serially
+
+        .. warning::
+
+            This flag is potentially dangerous. It is designed for use when
+            multiple state runs can safely be run at the same time. Do *not*
+            use this flag for performance optimization.
+
+    saltenv
+        Specify a salt fileserver environment to be used when applying states
+
+        .. versionchanged:: 0.17.0
+            Argument name changed from ``env`` to ``saltenv``
+
+        .. versionchanged:: 2014.7.0
+            If no saltenv is specified, the minion config will be checked for a
+            ``saltenv`` parameter and if found, it will be used. If none is
+            found, ``base`` will be used. In prior releases, the minion config
+            was not checked and ``base`` would always be assumed when the
+            saltenv was not explicitly set.
+
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
+
+    localconfig
+        Optionally, instead of using the minion config, load minion opts from
+        the file specified by this argument, and then merge them with the
+        options from the minion config. This functionality allows for specific
+        states to be run with their own custom minion configuration, including
+        different pillars, file_roots, etc.
+
+        .. code-block:: bash
+
+            salt '*' state.apply test localconfig=/path/to/minion.yml
     '''
     if mods:
         return sls(mods, **kwargs)
@@ -479,14 +691,18 @@ def highstate(test=None,
     Retrieve the state data from the salt master for this minion and execute it
 
     test
-        Notify states to execute in test-only (dry-run) mode.
-
-        Sets the ``test`` variable in the minion ``opts`` for the duration of
-        the state run.
+        Run states in test-only (dry-run) mode
 
     pillar
-        Additional pillar data to use for this function. Any pillar keys
-        specified here will overwrite matching keys in the Pillar data.
+        Custom Pillar values, passed as a dictionary of key-value pairs
+
+        .. code-block:: bash
+
+            salt '*' state.apply test pillar='{"foo": "bar"}'
+
+        .. note::
+            Values passed this way will override Pillar values set via
+            ``pillar_roots`` or an external Pillar source.
 
         .. versionchanged:: 2016.3.0
             GPG-encrypted CLI Pillar data is now supported via the GPG
@@ -498,18 +714,39 @@ def highstate(test=None,
 
         .. versionadded:: 2016.3.0
 
+    saltenv
+        Specify a salt fileserver environment to be used when applying states
+
+        .. versionchanged:: 0.17.0
+            Argument name changed from ``env`` to ``saltenv``.
+
+        .. versionchanged:: 2014.7.0
+            If no saltenv is specified, the minion config will be checked for a
+            ``saltenv`` parameter and if found, it will be used. If none is
+            found, ``base`` will be used. In prior releases, the minion config
+            was not checked and ``base`` would always be assumed when the
+            saltenv was not explicitly set.
+
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
+
     queue : False
         Instead of failing immediately when another state run is in progress,
         queue the new state run to begin running once the other has finished.
 
-        This option starts a new thread for each queued state run so use this
+        This option starts a new thread for each queued state run, so use this
         option sparingly.
 
     localconfig
-        Instead of using running minion opts, load ``localconfig`` and merge that
-        with the running minion opts. This functionality is intended for using
-        "roots" of salt directories (with their own minion config, pillars,
-        file_roots) to run highstate out of.
+        Optionally, instead of using the minion config, load minion opts from
+        the file specified by this argument, and then merge them with the
+        options from the minion config. This functionality allows for specific
+        states to be run with their own custom minion configuration, including
+        different pillars, file_roots, etc.
 
     mock:
         The mock option allows for the state run to execute without actually
@@ -518,7 +755,7 @@ def highstate(test=None,
 
         .. versionadded:: 2015.8.4
 
-    CLI Example:
+    CLI Examples:
 
     .. code-block:: bash
 
@@ -546,25 +783,22 @@ def highstate(test=None,
 
     opts = _get_opts(kwargs.get('localconfig'))
 
-    if test is None:
-        if salt.utils.test_mode(test=test, **kwargs):
-            opts['test'] = True
-        else:
-            opts['test'] = __opts__.get('test', None)
-    else:
-        opts['test'] = test
+    opts['test'] = _get_test_value(test, **kwargs)
 
     if 'env' in kwargs:
         salt.utils.warn_until(
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
     if 'saltenv' in kwargs:
         opts['environment'] = kwargs['saltenv']
+
+    if 'pillarenv' in kwargs:
+        opts['pillarenv'] = kwargs['pillarenv']
 
     pillar = kwargs.get('pillar')
     pillar_enc = kwargs.get('pillar_enc')
@@ -575,9 +809,6 @@ def highstate(test=None,
             'Pillar data must be formatted as a dictionary, unless pillar_enc '
             'is specified.'
         )
-
-    if 'pillarenv' in kwargs:
-        opts['pillarenv'] = kwargs['pillarenv']
 
     try:
         st_ = salt.state.HighState(opts,
@@ -595,14 +826,17 @@ def highstate(test=None,
                                    mocked=kwargs.get('mock', False))
 
     st_.push_active()
+    ret = {}
+    orchestration_jid = kwargs.get('orchestration_jid')
+    snapper_pre = _snapper_pre(opts, kwargs.get('__pub_jid', 'called localy'))
     try:
         ret = st_.call_highstate(
                 exclude=kwargs.get('exclude', []),
                 cache=kwargs.get('cache', None),
                 cache_name=kwargs.get('cache_name', 'highstate'),
                 force=kwargs.get('force', False),
-                whitelist=kwargs.get('whitelist')
-                )
+                whitelist=kwargs.get('whitelist'),
+                orchestration_jid=orchestration_jid)
     finally:
         st_.pop_active()
 
@@ -615,6 +849,7 @@ def highstate(test=None,
     _set_retcode(ret)
     # Work around Windows multiprocessing bug, set __opts__['test'] back to
     # value from before this function was run.
+    _snapper_post(opts, kwargs.get('__pub_jid', 'called localy'), snapper_pre)
     __opts__['test'] = orig_test
     return ret
 
@@ -627,17 +862,21 @@ def sls(mods,
         pillarenv=None,
         **kwargs):
     '''
-    Execute a set list of state files from an environment.
+    Execute the states in one or more SLS files
 
     test
-        Notify states to execute in test-only (dry-run) mode.
-
-        Sets the ``test`` variable in the minion ``opts`` for the duration of
-        the state run.
+        Run states in test-only (dry-run) mode
 
     pillar
-        Additional pillar data to use for this function. Any pillar keys
-        specified here will overwrite matching keys in the Pillar data.
+        Custom Pillar values, passed as a dictionary of key-value pairs
+
+        .. code-block:: bash
+
+            salt '*' state.apply test pillar='{"foo": "bar"}'
+
+        .. note::
+            Values passed this way will override Pillar values set via
+            ``pillar_roots`` or an external Pillar source.
 
         .. versionchanged:: 2016.3.0
             GPG-encrypted CLI Pillar data is now supported via the GPG
@@ -649,37 +888,49 @@ def sls(mods,
 
         .. versionadded:: 2016.3.0
 
-    queue : ``False``
+    queue : False
         Instead of failing immediately when another state run is in progress,
         queue the new state run to begin running once the other has finished.
 
-        This option starts a new thread for each queued state run so use this
+        This option starts a new thread for each queued state run, so use this
         option sparingly.
 
-    saltenv : None
-        Specify a ``file_roots`` environment.
+    concurrent : False
+        Execute state runs concurrently instead of serially
+
+        .. warning::
+
+            This flag is potentially dangerous. It is designed for use when
+            multiple state runs can safely be run at the same time. Do *not*
+            use this flag for performance optimization.
+
+    saltenv
+        Specify a salt fileserver environment to be used when applying states
 
         .. versionchanged:: 0.17.0
             Argument name changed from ``env`` to ``saltenv``.
-        .. versionchanged:: 2014.7
-            Defaults to None. If no saltenv is specified, the minion config will
-            be checked for a saltenv and if found, it will be used. If none is found,
-            base will be used.
 
-    pillarenv : None
-        Specify a ``pillar_roots`` environment. By default all pillar environments
-        merged together will be used.
+        .. versionchanged:: 2014.7.0
+            If no saltenv is specified, the minion config will be checked for a
+            ``saltenv`` parameter and if found, it will be used. If none is
+            found, ``base`` will be used. In prior releases, the minion config
+            was not checked and ``base`` would always be assumed when the
+            saltenv was not explicitly set.
 
-    concurrent:
-        WARNING: This flag is potentially dangerous. It is designed
-        for use when multiple state runs can safely be run at the same
-        Do not use this flag for performance optimization.
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
 
-    localconfig:
-        Instead of using running minion opts, load ``localconfig`` and merge that
-        with the running minion opts. This functionality is intended for using
-        "roots" of salt directories (with their own minion config, pillars,
-        file_roots) to run highstate out of.
+    localconfig
+
+        Optionally, instead of using the minion config, load minion opts from
+        the file specified by this argument, and then merge them with the
+        options from the minion config. This functionality allows for specific
+        states to be run with their own custom minion configuration, including
+        different pillars, file_roots, etc.
 
     mock:
         The mock option allows for the state run to execute without actually
@@ -703,7 +954,7 @@ def sls(mods,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -749,12 +1000,7 @@ def sls(mods,
     orig_test = __opts__.get('test', None)
     opts = _get_opts(kwargs.get('localconfig'))
 
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    elif test is not None:
-        opts['test'] = test
-    else:
-        opts['test'] = __opts__.get('test', None)
+    opts['test'] = _get_test_value(test, **kwargs)
 
     pillar = kwargs.get('pillar')
     pillar_enc = kwargs.get('pillar_enc')
@@ -771,7 +1017,6 @@ def sls(mods,
             __opts__['cachedir'],
             '{0}.cache.p'.format(kwargs.get('cache_name', 'highstate'))
             )
-
     try:
         st_ = salt.state.HighState(opts,
                                    pillar,
@@ -787,18 +1032,20 @@ def sls(mods,
                                    pillar_enc=pillar_enc,
                                    mocked=kwargs.get('mock', False))
 
+    orchestration_jid = kwargs.get('orchestration_jid')
     umask = os.umask(0o77)
     if kwargs.get('cache'):
         if os.path.isfile(cfn):
             with salt.utils.fopen(cfn, 'rb') as fp_:
                 high_ = serial.load(fp_)
-                return st_.state.call_high(high_)
+                return st_.state.call_high(high_, orchestration_jid)
     os.umask(umask)
 
     if isinstance(mods, six.string_types):
         mods = mods.split(',')
 
     st_.push_active()
+    ret = {}
     try:
         high_, errors = st_.render_highstate({saltenv: mods})
 
@@ -813,7 +1060,8 @@ def sls(mods,
                 high_['__exclude__'].extend(exclude)
             else:
                 high_['__exclude__'] = exclude
-        ret = st_.state.call_high(high_)
+        snapper_pre = _snapper_pre(opts, kwargs.get('__pub_jid', 'called localy'))
+        ret = st_.state.call_high(high_, orchestration_jid)
     finally:
         st_.pop_active()
     if __salt__['config.option']('state_data', '') == 'terse' or kwargs.get('terse'):
@@ -845,6 +1093,7 @@ def sls(mods,
         msg = 'Unable to write to highstate cache file {0}. Do you have permissions?'
         log.error(msg.format(cfn))
     os.umask(cumask)
+    _snapper_post(opts, kwargs.get('__pub_jid', 'called localy'), snapper_pre)
     return ret
 
 
@@ -852,11 +1101,31 @@ def top(topfn,
         test=None,
         queue=False,
         saltenv=None,
+        pillarenv=None,
         **kwargs):
     '''
     Execute a specific top file instead of the default. This is useful to apply
     configurations from a different environment (for example, dev or prod), without
     modifying the default top file.
+
+    queue : False
+        Instead of failing immediately when another state run is in progress,
+        queue the new state run to begin running once the other has finished.
+
+        This option starts a new thread for each queued state run, so use this
+        option sparingly.
+
+    saltenv
+        Specify a salt fileserver environment to be used when applying states
+
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
+
+        .. versionadded:: Nitrogen
 
     CLI Example:
 
@@ -876,10 +1145,13 @@ def top(topfn,
         return err
     orig_test = __opts__.get('test', None)
     opts = _get_opts(kwargs.get('localconfig'))
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    else:
-        opts['test'] = __opts__.get('test', None)
+    opts['test'] = _get_test_value(test, **kwargs)
+
+    if saltenv is not None:
+        opts['environment'] = saltenv
+
+    if pillarenv is not None:
+        opts['pillarenv'] = pillarenv
 
     pillar = kwargs.get('pillar')
     pillar_enc = kwargs.get('pillar_enc')
@@ -894,19 +1166,24 @@ def top(topfn,
     st_ = salt.state.HighState(opts, pillar, pillar_enc=pillar_enc, context=__context__)
     st_.push_active()
     st_.opts['state_top'] = salt.utils.url.create(topfn)
+    ret = {}
+    orchestration_jid = kwargs.get('orchestration_jid')
     if saltenv:
         st_.opts['state_top_saltenv'] = saltenv
     try:
+        snapper_pre = _snapper_pre(opts, kwargs.get('__pub_jid', 'called localy'))
         ret = st_.call_highstate(
                 exclude=kwargs.get('exclude', []),
                 cache=kwargs.get('cache', None),
-                cache_name=kwargs.get('cache_name', 'highstate')
-                )
+                cache_name=kwargs.get('cache_name', 'highstate'),
+                orchestration_jid=orchestration_jid)
     finally:
         st_.pop_active()
+
     _set_retcode(ret)
     # Work around Windows multiprocessing bug, set __opts__['test'] back to
     # value from before this function was run.
+    _snapper_post(opts, kwargs.get('__pub_jid', 'called localy'), snapper_pre)
     __opts__['test'] = orig_test
     return ret
 
@@ -969,36 +1246,94 @@ def show_lowstate(queue=False, **kwargs):
     return ret
 
 
+def show_state_usage(queue=False, **kwargs):
+    '''
+    Retrieve the highstate data from the salt master to analyse used and unused states
+
+    Custom Pillar data can be passed with the ``pillar`` kwarg.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' state.show_state_usage
+    '''
+    conflict = _check_queue(queue, kwargs)
+    if conflict is not None:
+        return conflict
+    pillar = kwargs.get('pillar')
+    pillar_enc = kwargs.get('pillar_enc')
+    if pillar_enc is None \
+            and pillar is not None \
+            and not isinstance(pillar, dict):
+        raise SaltInvocationError(
+            'Pillar data must be formatted as a dictionary, unless pillar_enc '
+            'is specified.'
+        )
+
+    st_ = salt.state.HighState(__opts__, pillar, pillar_enc=pillar_enc)
+    st_.push_active()
+
+    try:
+        ret = st_.compile_state_usage()
+    finally:
+        st_.pop_active()
+    _set_retcode(ret)
+    return ret
+
+
 def sls_id(
         id_,
         mods,
         saltenv='base',
+        pillarenv=None,
         test=None,
         queue=False,
         **kwargs):
     '''
     Call a single ID from the named module(s) and handle all requisites
 
+    The state ID comes *before* the module ID(s) on the command line.
+
+    id
+        ID to call
+
+    mods
+        Comma-delimited list of modules to search for given id and its requisites
+
     .. versionadded:: 2014.7.0
+
+    saltenv : base
+        Specify a salt fileserver environment to be used when applying states
+
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
 
     CLI Example:
 
     .. code-block:: bash
 
-        salt '*' state.sls_id apache http
+        salt '*' state.sls_id my_state my_module
+
+        salt '*' state.sls_id my_state my_module,a_common_module
     '''
     conflict = _check_queue(queue, kwargs)
     if conflict is not None:
         return conflict
     orig_test = __opts__.get('test', None)
     opts = _get_opts(kwargs.get('localconfig'))
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    else:
-        opts['test'] = __opts__.get('test', None)
-    if 'pillarenv' in kwargs:
-        opts['pillarenv'] = kwargs['pillarenv']
-    st_ = salt.state.HighState(opts)
+    opts['test'] = _get_test_value(test, **kwargs)
+    opts['environment'] = saltenv
+    if pillarenv is not None:
+        opts['pillarenv'] = pillarenv
+    try:
+        st_ = salt.state.HighState(opts, proxy=__proxy__)
+    except NameError:
+        st_ = salt.state.HighState(opts)
     if isinstance(mods, six.string_types):
         split_mods = mods.split(',')
     st_.push_active()
@@ -1015,6 +1350,8 @@ def sls_id(
     for chunk in chunks:
         if chunk.get('__id__', '') == id_:
             ret.update(st_.state.call_chunk(chunk, {}, chunks))
+
+    _set_retcode(ret)
     # Work around Windows multiprocessing bug, set __opts__['test'] back to
     # value from before this function was run.
     __opts__['test'] = orig_test
@@ -1028,12 +1365,23 @@ def sls_id(
 
 def show_low_sls(mods,
                  saltenv='base',
+                 pillarenv=None,
                  test=None,
                  queue=False,
                  **kwargs):
     '''
     Display the low data from a specific sls. The default environment is
     ``base``, use ``saltenv`` to specify a different environment.
+
+    saltenv
+        Specify a salt fileserver environment to be used when applying states
+
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
 
     CLI Example:
 
@@ -1046,7 +1394,7 @@ def show_low_sls(mods,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -1055,12 +1403,10 @@ def show_low_sls(mods,
         return conflict
     orig_test = __opts__.get('test', None)
     opts = _get_opts(kwargs.get('localconfig'))
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    else:
-        opts['test'] = __opts__.get('test', None)
-    if 'pillarenv' in kwargs:
-        opts['pillarenv'] = kwargs['pillarenv']
+    opts['test'] = _get_test_value(test, **kwargs)
+    opts['environment'] = saltenv
+    if pillarenv is not None:
+        opts['pillarenv'] = pillarenv
     st_ = salt.state.HighState(opts)
     if isinstance(mods, six.string_types):
         mods = mods.split(',')
@@ -1091,6 +1437,16 @@ def show_sls(mods, saltenv='base', test=None, queue=False, **kwargs):
 
     Custom Pillar data can be passed with the ``pillar`` kwarg.
 
+    saltenv
+        Specify a salt fileserver environment to be used when applying states
+
+    pillarenv
+        Specify a Pillar environment to be used when applying states. This
+        can also be set in the minion config file using the
+        :conf_minion:`pillarenv` option. When neither the
+        :conf_minion:`pillarenv` minion config option nor this CLI argument is
+        used, all Pillar environments will be merged together.
+
     CLI Example:
 
     .. code-block:: bash
@@ -1102,7 +1458,7 @@ def show_sls(mods, saltenv='base', test=None, queue=False, **kwargs):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -1112,10 +1468,7 @@ def show_sls(mods, saltenv='base', test=None, queue=False, **kwargs):
     orig_test = __opts__.get('test', None)
     opts = _get_opts(kwargs.get('localconfig'))
 
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    else:
-        opts['test'] = __opts__.get('test', None)
+    opts['test'] = _get_test_value(test, **kwargs)
 
     pillar = kwargs.get('pillar')
     pillar_enc = kwargs.get('pillar_enc')
@@ -1165,7 +1518,7 @@ def show_top(queue=False, **kwargs):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -1215,10 +1568,7 @@ def single(fun, name, test=None, queue=False, **kwargs):
                    'name': name})
     orig_test = __opts__.get('test', None)
     opts = _get_opts(kwargs.get('localconfig'))
-    if salt.utils.test_mode(test=test, **kwargs):
-        opts['test'] = True
-    else:
-        opts['test'] = __opts__.get('test', None)
+    opts['test'] = _get_test_value(test, **kwargs)
 
     pillar = kwargs.get('pillar')
     pillar_enc = kwargs.get('pillar_enc')
@@ -1240,11 +1590,13 @@ def single(fun, name, test=None, queue=False, **kwargs):
         return err
 
     st_._mod_init(kwargs)
+    snapper_pre = _snapper_pre(opts, kwargs.get('__pub_jid', 'called localy'))
     ret = {'{0[state]}_|-{0[__id__]}_|-{0[name]}_|-{0[fun]}'.format(kwargs):
             st_.call(kwargs)}
     _set_retcode(ret)
     # Work around Windows multiprocessing bug, set __opts__['test'] back to
     # value from before this function was run.
+    _snapper_post(opts, kwargs.get('__pub_jid', 'called localy'), snapper_pre)
     __opts__['test'] = orig_test
     return ret
 
@@ -1274,7 +1626,7 @@ def clear_cache():
     return ret
 
 
-def pkg(pkg_path, pkg_sum, hash_type, test=False, **kwargs):
+def pkg(pkg_path, pkg_sum, hash_type, test=None, **kwargs):
     '''
     Execute a packaged state run, the packaged state run will exist in a
     tarball available locally. This packaged state
@@ -1284,7 +1636,7 @@ def pkg(pkg_path, pkg_sum, hash_type, test=False, **kwargs):
 
     .. code-block:: bash
 
-        salt '*' state.pkg /tmp/state_pkg.tgz
+        salt '*' state.pkg /tmp/salt_state.tgz 760a9353810e36f6d81416366fc426dc md5
     '''
     # TODO - Add ability to download from salt master or other source
     if not os.path.isfile(pkg_path):
@@ -1318,10 +1670,7 @@ def pkg(pkg_path, pkg_sum, hash_type, test=False, **kwargs):
     popts = _get_opts(kwargs.get('localconfig'))
     popts['fileclient'] = 'local'
     popts['file_roots'] = {}
-    if salt.utils.test_mode(test=test, **kwargs):
-        popts['test'] = True
-    else:
-        popts['test'] = __opts__.get('test', None)
+    popts['test'] = _get_test_value(test, **kwargs)
     envs = os.listdir(root)
     for fn_ in envs:
         full = os.path.join(root, fn_)
@@ -1329,11 +1678,14 @@ def pkg(pkg_path, pkg_sum, hash_type, test=False, **kwargs):
             continue
         popts['file_roots'][fn_] = [full]
     st_ = salt.state.State(popts, pillar=pillar)
+    snapper_pre = _snapper_pre(popts, kwargs.get('__pub_jid', 'called localy'))
     ret = st_.call_chunks(lowstate)
     try:
         shutil.rmtree(root)
     except (IOError, OSError):
         pass
+    _set_retcode(ret)
+    _snapper_post(popts, kwargs.get('__pub_jid', 'called localy'), snapper_pre)
     return ret
 
 
@@ -1531,7 +1883,7 @@ def event(tagmatch='*',
             listen=True)
 
     while True:
-        ret = sevent.get_event(full=True)
+        ret = sevent.get_event(full=True, auto_reconnect=True)
         if ret is None:
             continue
 

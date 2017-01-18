@@ -27,13 +27,21 @@ Module to provide Elasticsearch compatibility to Salt
         elasticsearch:
           hosts:
             - '10.10.10.100:9200'
+          use_ssl: True
+          verify_certs: True
+          ca_certs: /path/to/custom_ca_bundle.pem
           number_of_shards: 1
           number_of_replicas: 0
           functions_blacklist:
             - 'saltutil.find_job'
             - 'pillar.items'
             - 'grains.items'
+          proxies:
+            - http: http://proxy:3128
+            - https: http://proxy:1080
 
+    When specifying proxies the requests backend will be used and the 'proxies'
+    data structure is passed as-is to that module.
 
     This data can also be passed into pillar. Options passed into opts will
     overwrite options passed into pillar.
@@ -50,6 +58,7 @@ log = logging.getLogger(__name__)
 # Import third party libs
 try:
     import elasticsearch
+    from elasticsearch import RequestsHttpConnection
     logging.getLogger('elasticsearch').setLevel(logging.CRITICAL)
     HAS_ELASTICSEARCH = True
 except ImportError:
@@ -72,6 +81,10 @@ def _get_instance(hosts=None, profile=None):
     Return the elasticsearch instance
     '''
     es = None
+    proxies = {}
+    use_ssl = False
+    ca_certs = False
+    verify_certs = False
 
     if profile is None:
         profile = 'elasticsearch'
@@ -84,13 +97,39 @@ def _get_instance(hosts=None, profile=None):
         hosts = _profile.get('host', None)
         if not hosts:
             hosts = _profile.get('hosts', None)
+        proxies = _profile.get('proxies', {})
+        use_ssl = _profile.get('use_ssl', False)
+        ca_certs = _profile.get('ca_certs', False)
+        verify_certs = _profile.get('verify_certs', False)
 
     if not hosts:
         hosts = ['127.0.0.1:9200']
     if isinstance(hosts, string_types):
         hosts = [hosts]
     try:
-        es = elasticsearch.Elasticsearch(hosts)
+        if proxies == {}:
+            es = elasticsearch.Elasticsearch(
+                    hosts,
+                    use_ssl=use_ssl,
+                    ca_certs=ca_certs,
+                    verify_certs=verify_certs,
+                )
+        else:
+            # Custom connection class to use requests module with proxies
+            class ProxyConnection(RequestsHttpConnection):
+                def __init__(self, *args, **kwargs):
+                    proxies = kwargs.pop('proxies', {})
+                    super(ProxyConnection, self).__init__(*args, **kwargs)
+                    self.session.proxies = proxies
+
+            es = elasticsearch.Elasticsearch(
+                hosts,
+                connection_class=ProxyConnection,
+                proxies=_profile.get('proxies', {}),
+                use_ssl=use_ssl,
+                ca_certs=ca_certs,
+                verify_certs=verify_certs,
+            )
         if not es.ping():
             raise CommandExecutionError('Could not connect to Elasticsearch host/ cluster {0}, is it unhealthy?'.format(hosts))
     except elasticsearch.exceptions.ConnectionError:

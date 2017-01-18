@@ -748,6 +748,18 @@ def _parse_settings_eth(opts, iface_type, enabled, iface):
     if 'clonenum_start' in opts:
         result['clonenum_start'] = opts['clonenum_start']
 
+    # If NetworkManager is available, we can control whether we use
+    # it or not
+    if 'nm_controlled' in opts:
+        if opts['nm_controlled'] in _CONFIG_TRUE:
+            result['nm_controlled'] = 'yes'
+        elif opts['nm_controlled'] in _CONFIG_FALSE:
+            result['nm_controlled'] = 'no'
+        else:
+            _raise_error_iface(iface, opts['nm_controlled'], valid)
+    else:
+        result['nm_controlled'] = 'no'
+
     return result
 
 
@@ -776,7 +788,10 @@ def _parse_network_settings(opts, current):
     # Normalize keys
     opts = dict((k.lower(), v) for (k, v) in six.iteritems(opts))
     current = dict((k.lower(), v) for (k, v) in six.iteritems(current))
-    result = {}
+
+    # Check for supported parameters
+    retain_settings = opts.get('retain_settings', False)
+    result = current if retain_settings else {}
 
     valid = _CONFIG_TRUE + _CONFIG_FALSE
     if 'enabled' not in opts:
@@ -877,18 +892,16 @@ def _write_file_iface(iface, data, folder, pattern):
         msg = msg.format(filename, folder)
         log.error(msg)
         raise AttributeError(msg)
-    fout = salt.utils.fopen(filename, 'w')
-    fout.write(data)
-    fout.close()
+    with salt.utils.fopen(filename, 'w') as fp_:
+        fp_.write(data)
 
 
 def _write_file_network(data, filename):
     '''
     Writes a file to disk
     '''
-    fout = salt.utils.fopen(filename, 'w')
-    fout.write(data)
-    fout.close()
+    with salt.utils.fopen(filename, 'w') as fp_:
+        fp_.write(data)
 
 
 def _read_temp(data):
@@ -1008,8 +1021,11 @@ def build_routes(iface, **settings):
     '''
 
     template = 'rh6_route_eth.jinja'
-    if __grains__['osrelease'][0] < 6:
-        template = 'route_eth.jinja'
+    try:
+        if int(__grains__['osrelease'][0]) < 6:
+            template = 'route_eth.jinja'
+    except ValueError:
+        pass
     log.debug('Template name: ' + template)
 
     iface = iface.lower()

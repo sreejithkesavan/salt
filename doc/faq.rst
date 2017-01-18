@@ -12,17 +12,30 @@ No. Salt is 100% committed to being open-source, including all of our APIs. It
 is developed under the `Apache 2.0 license`_, allowing it to be used in both
 open and proprietary projects.
 
+To expand on this a little:
+
+There is much argument over the actual definition of "open core".  From our standpoint, Salt is open source because
+
+1. It is a standalone product that anyone is free to use.
+2. It is developed in the open with contributions accepted from the community for the good of the project.
+3. There are no features of Salt itself that are restricted to separate proprietary products distributed by SaltStack, Inc.
+4. Because of our Apache 2.0 license, Salt can be used as the foundation for a project or even a proprietary tool.
+5. Our APIs are open and documented (any lack of documentation is an oversight as opposed to an intentional decision by SaltStack the company) and available for use by anyone.
+
+SaltStack the company does make proprietary products which use Salt and its libraries, like company is free to do, but we do so via the APIs, NOT by forking Salt and creating a different, closed-source version of it for paying customers.
+
+
 .. _`Apache 2.0 license`: http://www.apache.org/licenses/LICENSE-2.0.html
 
 I think I found a bug! What should I do?
------------------------------------------
+----------------------------------------
 
 The salt-users mailing list as well as the salt IRC channel can both be helpful
 resources to confirm if others are seeing the issue and to assist with
 immediate debugging.
 
 To report a bug to the Salt project, please follow the instructions in
-:doc:`reporting a bug </topics/development/reporting_bugs>`.
+:ref:`reporting a bug <reporting-bugs>`.
 
 
 What ports should I open on my firewall?
@@ -30,7 +43,7 @@ What ports should I open on my firewall?
 
 Minions need to be able to connect to the Master on TCP ports 4505 and 4506.
 Minions do not need any inbound ports open. More detailed information on
-firewall settings can be found :doc:`here </topics/tutorials/firewall>`.
+firewall settings can be found :ref:`here <firewall>`.
 
 I'm seeing weird behavior (including but not limited to packages not installing their users properly)
 -----------------------------------------------------------------------------------------------------
@@ -38,8 +51,8 @@ I'm seeing weird behavior (including but not limited to packages not installing 
 This is often caused by SELinux.  Try disabling SELinux or putting it in
 permissive mode and see if the weird behavior goes away.
 
-My script runs every time I run a *state.highstate*. Why?
----------------------------------------------------------
+My script runs every time I run a *state.apply*. Why?
+-----------------------------------------------------
 
 You are probably using :mod:`cmd.run <salt.states.cmd.run>` rather than
 :mod:`cmd.wait <salt.states.cmd.wait>`. A :mod:`cmd.wait
@@ -134,13 +147,20 @@ should be opened on our tracker_, with the following information:
 Why aren't my custom modules/states/etc. available on my Minions?
 -----------------------------------------------------------------
 
-Custom modules are only synced to Minions when :mod:`state.highstate
-<salt.modules.state.highstate>`, :mod:`saltutil.sync_modules
-<salt.modules.saltutil.sync_modules>`, or :mod:`saltutil.sync_all
-<salt.modules.saltutil.sync_all>` is run. Similarly, custom states are only
-synced to Minions when :mod:`state.highstate <salt.modules.state.highstate>`,
+Custom modules are synced to Minions when 
+:mod:`saltutil.sync_modules <salt.modules.saltutil.sync_modules>`,
+or :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>` is run.
+Custom modules are also synced by :mod:`state.apply` when run without
+any arguments.
+
+
+Similarly, custom states are synced to Minions
+when :mod:`state.apply <salt.modules.state.apply_>`,
 :mod:`saltutil.sync_states <salt.modules.saltutil.sync_states>`, or
 :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>` is run.
+
+Custom states are also synced by :mod:`state.apply<salt.modules.state.apply_>`
+when run without any arguments.
 
 Other custom types (renderers, outputters, etc.) have similar behavior, see the
 documentation for the :mod:`saltutil <salt.modules.saltutil>` module for more
@@ -187,7 +207,7 @@ Does Salt support backing up managed files?
 -------------------------------------------
 
 Yes. Salt provides an easy to use addition to your file.managed states that
-allow you to back up files via :doc:`backup_mode </ref/states/backup_mode>`,
+allow you to back up files via :ref:`backup_mode <file-state-backups>`,
 backup_mode can be configured on a per state basis, or in the minion config
 (note that if set in the minion config this would simply be the default
 method to use, you still need to specify that the file should be backed up!).
@@ -255,9 +275,9 @@ Linux/Unix
         - name: salt-minion
         - require:
           - pkg: salt-minion
-      cmd.wait:
+      cmd.run:
         - name: echo service salt-minion restart | at now + 1 minute
-        - watch:
+        - onchanges:
           - pkg: salt-minion
 
 To ensure that **at** is installed and **atd** is running, the following states
@@ -341,7 +361,28 @@ files on the local system, grains are considered less secure than other
 identifiers in Salt. Use caution when targeting sensitive operations or setting
 pillar values based on grain data.
 
+The only grain which can be safely used is ``grains['id']`` which contains the Minion ID.
+
 When possible, you should target sensitive operations and data using the Minion
 ID. If the Minion ID of a system changes, the Salt Minion's public key must be
 re-accepted by an administrator on the Salt Master, making it less vulnerable
 to impersonation attacks.
+
+Why Did the Value for a Grain Change on Its Own?
+------------------------------------------------
+
+This is usually the result of an upstream change in an OS distribution that
+replaces or removes something that Salt was using to detect the grain.
+Fortunately, when this occurs, you can use Salt to fix it with a command
+similar to the following:
+
+.. code-block:: bash
+
+    salt -G 'grain:ChangedValue' grains.setvals "{'grain': 'OldValue'}"
+
+(Replacing *grain*, *ChangedValue*, and *OldValue* with
+the grain and values that you want to change / set.)
+
+You should also `file an issue <https://github.com/saltstack/salt/issues>`_
+describing the change so it can be fixed in Salt.
+

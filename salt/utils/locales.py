@@ -9,6 +9,7 @@ import sys
 
 import salt.utils
 from salt.utils.decorators import memoize as real_memoize
+from salt.ext.six import string_types
 
 
 @real_memoize
@@ -48,6 +49,16 @@ def sdecode(string_):
         except UnicodeDecodeError:
             continue
     return string_
+
+
+def sdecode_if_string(value_):
+    '''
+    If the value is a string, run sdecode() on it to ensure it is parsed
+    properly. If it is not a string, return it as-is
+    '''
+    if isinstance(value_, string_types):
+        value_ = sdecode(value_)
+    return value_
 
 
 def split_locale(loc):
@@ -103,3 +114,17 @@ def normalize_locale(loc):
     comps['codeset'] = comps['codeset'].lower().replace('-', '')
     comps['charmap'] = ''
     return join_locale(comps)
+
+
+def decode_recursively(object_):
+    if isinstance(object_, list):
+        return [decode_recursively(o) for o in object_]
+    if isinstance(object_, tuple):
+        return tuple([decode_recursively(o) for o in object_])
+    if isinstance(object_, dict):
+        return dict([(decode_recursively(key), decode_recursively(value))
+                     for key, value in salt.ext.six.iteritems(object_)])
+    elif isinstance(object_, string_types):
+        return sdecode(object_)
+    else:
+        return object_

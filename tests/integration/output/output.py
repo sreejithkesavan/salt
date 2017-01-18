@@ -11,10 +11,12 @@ import traceback
 # Import Salt Testing Libs
 from salttesting.helpers import ensure_in_syspath
 from salttesting.mixins import RUNTIME_VARS
+
 ensure_in_syspath('../../')
 
 # Import Salt libs
 import integration
+import salt.config
 from salt.output import display_output
 import salt.config
 
@@ -30,9 +32,10 @@ class OutputReturnTest(integration.ShellCase):
         '''
         Tests the return of json-formatted data
         '''
-        expected = ['{', '    "local": true', '}']
         ret = self.run_call('test.ping --out=json')
-        self.assertEqual(ret, expected)
+        self.assertIn('{', ret)
+        self.assertIn('"local": true', ''.join(ret))
+        self.assertIn('}', ''.join(ret))
 
     def test_output_nested(self):
         '''
@@ -86,15 +89,18 @@ class OutputReturnTest(integration.ShellCase):
         '''
         Tests outputter reliability with utf8
         '''
-        opts = salt.config.minion_config(os.path.join(RUNTIME_VARS.TMP_CONF_DIR, "minion"))
+        opts = salt.config.minion_config(os.path.join(RUNTIME_VARS.TMP_CONF_DIR, 'minion'))
         opts['output_file'] = os.path.join(
-            opts['root_dir'], 'outputtest')
+            integration.SYS_TMP_DIR,
+            'salt-tests-tmpdir',
+            'outputtest'
+        )
         data = {'foo': {'result': False,
                         'aaa': 'azerzaeréééé',
                         'comment': u'ééééàààà'}}
         try:
             # this should not raises UnicodeEncodeError
-            display_output(data, opts=self.minion_opts)
+            display_output(data, opts=opts)
             self.assertTrue(True)
         except Exception:
             # display trace in error message for debugging on jenkins

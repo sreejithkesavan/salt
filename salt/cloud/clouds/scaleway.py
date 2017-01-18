@@ -215,20 +215,16 @@ def create(server_):
     except AttributeError:
         pass
 
-    # Since using "provider: <provider-engine>" is deprecated, alias provider
-    # to use driver: "driver: <provider-engine>"
-    if 'provider' in server_:
-        server_['driver'] = server_.pop('provider')
-
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(server_['name']),
-        {
+        args={
             'name': server_['name'],
             'profile': server_['profile'],
             'provider': server_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -238,17 +234,23 @@ def create(server_):
         'access_key', get_configured_provider(), __opts__, search_global=False
     )
 
+    commercial_type = config.get_cloud_config_value(
+        'commercial_type', server_, __opts__, default='C1'
+    )
+
     kwargs = {
         'name': server_['name'],
         'organization': access_key,
         'image': get_image(server_),
+        'commercial_type': commercial_type,
     }
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(server_['name']),
-        {'kwargs': kwargs},
+        args={'kwargs': kwargs},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -297,7 +299,7 @@ def create(server_):
     server_['ssh_password'] = config.get_cloud_config_value(
         'ssh_password', server_, __opts__
     )
-    ret = salt.utils.cloud.bootstrap(server_, __opts__)
+    ret = __utils__['cloud.bootstrap'](server_, __opts__)
 
     ret.update(data)
 
@@ -308,15 +310,16 @@ def create(server_):
         )
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(server_['name']),
-        {
+        args={
             'name': server_['name'],
             'profile': server_['profile'],
             'provider': server_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -332,7 +335,7 @@ def query(method='servers', server_id=None, command=None, args=None,
         get_configured_provider(),
         __opts__,
         search_global=False,
-        default='https://api.scaleway.com'
+        default='https://api.cloud.online.net'
     ))
 
     path = '{0}/{1}/'.format(base_path, method)
@@ -361,7 +364,7 @@ def query(method='servers', server_id=None, command=None, args=None,
         raise SaltCloudSystemExit(
             'An error occurred while querying Scaleway. HTTP Code: {0}  '
             'Error: \'{1}\''.format(
-                request.getcode(),
+                request.status_code,
                 request.text
             )
         )
@@ -396,7 +399,7 @@ def show_instance(name, call=None):
             'The show_instance action must be called with -a or --action.'
         )
     node = _get_node(name)
-    salt.utils.cloud.cache_node(node, __active_provider_name__, __opts__)
+    __utils__['cloud.cache_node'](node, __active_provider_name__, __opts__)
     return node
 
 
@@ -430,11 +433,12 @@ def destroy(name, call=None):
             '-a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -444,16 +448,17 @@ def destroy(name, call=None):
         args={'action': 'terminate'}, http_method='post'
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(
+        __utils__['cloud.delete_minion_cachedir'](
             name, __active_provider_name__.split(':')[0], __opts__
         )
 

@@ -229,7 +229,9 @@ class SPMClient(object):
                             dl_path = dl_path.replace('file://', '')
                             shutil.copyfile(dl_path, out_file)
                         else:
-                            http.query(dl_path, text_out=out_file)
+                            response = http.query(dl_path, text=True)
+                            with salt.utils.fopen(out_file, 'w') as outf:
+                                outf.write(response.get("text"))
 
                         # Kick off the install
                         self._install_indv_pkg(package, out_file)
@@ -393,6 +395,8 @@ class SPMClient(object):
 
         can_has = {}
         cant_has = []
+        if 'dependencies' in formula_def and formula_def['dependencies'] is None:
+            formula_def['dependencies'] = ''
         for dep in formula_def.get('dependencies', '').split(','):
             dep = dep.strip()
             if not dep:
@@ -472,7 +476,7 @@ class SPMClient(object):
                     metadata = yaml.safe_load(rpm)
             else:
                 response = http.query(dl_path, text=True)
-                metadata = response.get('text', {})
+                metadata = yaml.safe_load(response.get('text', '{}'))
             cache_path = '{0}/{1}.p'.format(
                 self.opts['spm_cache_dir'],
                 repo

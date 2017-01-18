@@ -12,14 +12,15 @@ Module to import docker-compose via saltstack
 
 Introduction
 ------------
-This module allows to deal with docker-compose file in a directory.
+This module allows one to deal with docker-compose file in a directory.
 
 This is  a first version only, the following commands are missing at the moment
 but will be built later on if the community is interested in this module:
-  - run
-  - logs
-  - port
-  - scale
+
+- run
+- logs
+- port
+- scale
 
 Installation Prerequisites
 --------------------------
@@ -43,6 +44,7 @@ can issue the command create, it takes two arguments the path where the
 docker-compose.yml will be stored and the content of this latter:
 
 .. code-block:: bash
+
     # salt-call -l debug dockercompose.create /tmp/toto '
      database:
      image: mongo:3.0
@@ -54,25 +56,25 @@ argument (the path where the docker-compose.yml will be read) and an optional
 python list which corresponds to the services names:
 
 .. code-block:: bash
+
     # salt-call -l debug dockercompose.up /tmp/toto
     # salt-call -l debug dockercompose.restart /tmp/toto '[database]'
     # salt-call -l debug dockercompose.stop /tmp/toto
     # salt-call -l debug dockercompose.rm /tmp/toto
 
-
 Docker-compose method supported
 -------------------------------
- - up
- - restart
- - stop
- - start
- - pause
- - unpause
- - kill
- - rm
- - ps
- - pull
- - build
+- up
+- restart
+- stop
+- start
+- pause
+- unpause
+- kill
+- rm
+- ps
+- pull
+- build
 
 Functions
 ---------
@@ -91,7 +93,7 @@ Functions
 - Manage containers image:
     - :py:func:`dockercompose.pull <salt.modules.dockercompose.pull>`
     - :py:func:`dockercompose.build <salt.modules.dockercompose.build>`
-- Gather informations about containers:
+- Gather information about containers:
     - :py:func:`dockercompose.ps <salt.modules.dockercompose.ps>`
 
 Detailed Function Documentation
@@ -115,7 +117,14 @@ try:
 except ImportError:
     HAS_DOCKERCOMPOSE = False
 
+try:
+    from compose.project import OneOffFilter
+    USE_FILTERCLASS = True
+except ImportError:
+    USE_FILTERCLASS = False
+
 MIN_DOCKERCOMPOSE = (1, 5, 0)
+MAX_DOCKERCOMPOSE = (1, 9, 0)
 VERSION_RE = r'([\d.]+)'
 
 log = logging.getLogger(__name__)
@@ -130,10 +139,8 @@ def __virtual__():
         match = re.match(VERSION_RE, str(compose.__version__))
         if match:
             version = tuple([int(x) for x in match.group(1).split('.')])
-            if MIN_DOCKERCOMPOSE >= version:
+            if version >= MIN_DOCKERCOMPOSE and version <= MAX_DOCKERCOMPOSE:
                 return __virtualname__
-        else:
-            log.critical('Minimum version of docker-compose>=1.5.0')
     return (False, 'The dockercompose execution module not loaded: '
             'compose python library not available.')
 
@@ -232,7 +239,7 @@ def __load_project(path):
 
 def __handle_except(inst):
     '''
-    Handle exception and return a standart result
+    Handle exception and return a standard result
 
     :param inst:
     :return:
@@ -355,7 +362,7 @@ def build(path, service_names=None):
     python list, if omitted build images for all containers. Please note
     that at the moment the module does not allow you to upload your Dockerfile,
     nor any other file you could need with your docker-compose.yml, you will
-    have to make sure the files you need are actually in the directory sepcified
+    have to make sure the files you need are actually in the directory specified
     in the `build` keyword
 
     path
@@ -654,10 +661,16 @@ def ps(path):
     if isinstance(project, dict):
         return project
     else:
-        containers = sorted(
-            project.containers(None, stopped=True) +
-            project.containers(None, one_off=True),
-            key=attrgetter('name'))
+        if USE_FILTERCLASS:
+            containers = sorted(
+                project.containers(None, stopped=True) +
+                project.containers(None, OneOffFilter.only),
+                key=attrgetter('name'))
+        else:
+            containers = sorted(
+                project.containers(None, stopped=True) +
+                project.containers(None, one_off=True),
+                key=attrgetter('name'))
         for container in containers:
             command = container.human_readable_command
             if len(command) > 30:

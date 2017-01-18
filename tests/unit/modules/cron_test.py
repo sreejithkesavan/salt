@@ -28,12 +28,22 @@ STUB_CRON_TIMESTAMP = {'minute': '1',
 
 STUB_SIMPLE_RAW_CRON = '5 0 * * * /tmp/no_script.sh'
 STUB_SIMPLE_CRON_DICT = {'pre': ['5 0 * * * /tmp/no_script.sh'], 'crons': [], 'env': [], 'special': []}
+STUB_CRON_SPACES = """
+# Lines below here are managed by Salt, do not edit
+TEST_VAR="a string with plenty of spaces"
+# SALT_CRON_IDENTIFIER:echo "must  be  double  spaced"
+11 * * * * echo "must  be  double  spaced"
+"""
 
 __grains__ = {}
 L = '# Lines below here are managed by Salt, do not edit\n'
 
 
 CRONTAB = StringIO()
+
+# Setup globals
+cron.__salt__ = {}
+cron.__grains__ = {}
 
 
 def get_crontab(*args, **kw):
@@ -161,7 +171,7 @@ class CronTestCase(TestCase):
             'salt.modules.cron.raw_cron',
             new=MagicMock(side_effect=get_crontab)
         ):
-            set_crontab(L + '* * * * * ls\n')
+            set_crontab(L + '* * * * * ls\n\n')
             cron.set_job(
                 user='root',
                 minute='*',
@@ -179,6 +189,7 @@ class CronTestCase(TestCase):
                 c1,
                 '# Lines below here are managed by Salt, do not edit\n'
                 '* * * * * ls\n'
+                '\n'
             )
             cron.set_job(
                 user='root',
@@ -528,6 +539,28 @@ class CronTestCase(TestCase):
                 'pre': ['# An unmanaged commented cron job', '#0 * * * * /bin/true'],
                 'special': []})
 
+    @patch('salt.modules.cron.raw_cron', new=MagicMock(return_value=STUB_CRON_SPACES))
+    def test_cron_extra_spaces(self):
+        '''
+        Issue #38449
+        '''
+        self.maxDiff = None
+        with patch.dict(cron.__grains__, {'os': None}):
+            ret = cron.list_tab('root')
+            eret = {'crons': [{'cmd': 'echo "must  be  double  spaced"',
+                               'comment': '',
+                               'commented': False,
+                               'daymonth': '*',
+                               'dayweek': '*',
+                               'hour': '*',
+                               'identifier': 'echo "must  be  double  spaced"',
+                               'minute': '11',
+                               'month': '*'}],
+                    'env': [{'name': 'TEST_VAR', 'value': '"a string with plenty of spaces"'}],
+                    'pre': [''],
+                    'special': []}
+            self.assertEqual(eret, ret)
+
     @patch('salt.modules.cron.raw_cron',
            new=MagicMock(side_effect=[
                (L + '\n'),
@@ -596,6 +629,243 @@ class CronTestCase(TestCase):
                  'minute': '*',
                  'month': '*'})
 
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_write_cron_file_root_rh(self):
+        '''
+        Assert that write_cron_file() is called with the correct cron command and user: RedHat
+          - If instance running uid matches crontab user uid, runas STUB_USER without -u flag.
+        '''
+        cron.__grains__ = {'os_family': 'RedHat'}
+        with patch.dict(cron.__salt__, {'cmd.retcode': MagicMock()}):
+            cron.write_cron_file(STUB_USER, STUB_PATH)
+            cron.__salt__['cmd.retcode'].assert_called_with("crontab /tmp",
+                                                            runas=STUB_USER,
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_write_cron_file_foo_rh(self):
+        '''
+        Assert that write_cron_file() is called with the correct cron command and user: RedHat
+          - If instance running with uid that doesn't match crontab user uid, run with -u flag
+        '''
+        cron.__grains__ = {'os_family': 'RedHat'}
+        with patch.dict(cron.__salt__, {'cmd.retcode': MagicMock()}):
+            cron.write_cron_file('foo', STUB_PATH)
+            cron.__salt__['cmd.retcode'].assert_called_with("crontab -u foo /tmp",
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_write_cron_file_root_sol(self):
+        '''
+        Assert that write_cron_file() is called with the correct cron command and user: Solaris
+          - Solaris should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'Solaris'}
+        with patch.dict(cron.__salt__, {'cmd.retcode': MagicMock()}):
+            cron.write_cron_file(STUB_USER, STUB_PATH)
+            cron.__salt__['cmd.retcode'].assert_called_with("crontab /tmp",
+                                                            runas=STUB_USER,
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_write_cron_file_foo_sol(self):
+        '''
+        Assert that write_cron_file() is called with the correct cron command and user: Solaris
+          - Solaris should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'Solaris'}
+        with patch.dict(cron.__salt__, {'cmd.retcode': MagicMock()}):
+            cron.write_cron_file('foo', STUB_PATH)
+            cron.__salt__['cmd.retcode'].assert_called_with("crontab /tmp",
+                                                            runas='foo',
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_write_cron_file_root_aix(self):
+        '''
+        Assert that write_cron_file() is called with the correct cron command and user: AIX
+          - AIX should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'AIX'}
+        with patch.dict(cron.__salt__, {'cmd.retcode': MagicMock()}):
+            cron.write_cron_file(STUB_USER, STUB_PATH)
+            cron.__salt__['cmd.retcode'].assert_called_with("crontab /tmp",
+                                                            runas=STUB_USER,
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_write_cron_file_foo_aix(self):
+        '''
+        Assert that write_cron_file() is called with the correct cron command and user: AIX
+          - AIX should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'AIX'}
+        with patch.dict(cron.__salt__, {'cmd.retcode': MagicMock()}):
+            cron.write_cron_file('foo', STUB_PATH)
+            cron.__salt__['cmd.retcode'].assert_called_with("crontab /tmp",
+                                                            runas='foo',
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_write_cr_file_v_root_rh(self):
+        '''
+        Assert that write_cron_file_verbose() is called with the correct cron command and user: RedHat
+          - If instance running uid matches crontab user uid, runas STUB_USER without -u flag.
+        '''
+        cron.__grains__ = {'os_family': 'RedHat'}
+        with patch.dict(cron.__salt__, {'cmd.run_all': MagicMock()}):
+            cron.write_cron_file_verbose(STUB_USER, STUB_PATH)
+            cron.__salt__['cmd.run_all'].assert_called_with("crontab /tmp",
+                                                            runas=STUB_USER,
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_write_cr_file_v_foo_rh(self):
+        '''
+        Assert that write_cron_file_verbose() is called with the correct cron command and user: RedHat
+          - If instance running with uid that doesn't match crontab user uid, run with -u flag
+        '''
+        cron.__grains__ = {'os_family': 'RedHat'}
+        with patch.dict(cron.__salt__, {'cmd.run_all': MagicMock()}):
+            cron.write_cron_file_verbose('foo', STUB_PATH)
+            cron.__salt__['cmd.run_all'].assert_called_with("crontab -u foo /tmp",
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_write_cr_file_v_root_sol(self):
+        '''
+        Assert that write_cron_file_verbose() is called with the correct cron command and user: Solaris
+          - Solaris should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'Solaris'}
+        with patch.dict(cron.__salt__, {'cmd.run_all': MagicMock()}):
+            cron.write_cron_file_verbose(STUB_USER, STUB_PATH)
+            cron.__salt__['cmd.run_all'].assert_called_with("crontab /tmp",
+                                                            runas=STUB_USER,
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_write_cr_file_v_foo_sol(self):
+        '''
+        Assert that write_cron_file_verbose() is called with the correct cron command and user: Solaris
+          - Solaris should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'Solaris'}
+        with patch.dict(cron.__salt__, {'cmd.run_all': MagicMock()}):
+            cron.write_cron_file_verbose('foo', STUB_PATH)
+            cron.__salt__['cmd.run_all'].assert_called_with("crontab /tmp",
+                                                            runas='foo',
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_write_cr_file_v_root_aix(self):
+        '''
+        Assert that write_cron_file_verbose() is called with the correct cron command and user: AIX
+          - AIX should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'AIX'}
+        with patch.dict(cron.__salt__, {'cmd.run_all': MagicMock()}):
+            cron.write_cron_file_verbose(STUB_USER, STUB_PATH)
+            cron.__salt__['cmd.run_all'].assert_called_with("crontab /tmp",
+                                                            runas=STUB_USER,
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_write_cr_file_v_foo_aix(self):
+        '''
+        Assert that write_cron_file_verbose() is called with the correct cron command and user: AIX
+          - AIX should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'AIX'}
+        with patch.dict(cron.__salt__, {'cmd.run_all': MagicMock()}):
+            cron.write_cron_file_verbose('foo', STUB_PATH)
+            cron.__salt__['cmd.run_all'].assert_called_with("crontab /tmp",
+                                                            runas='foo',
+                                                            python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_raw_cron_root_redhat(self):
+        '''
+        Assert that raw_cron() is called with the correct cron command and user: RedHat
+          - If instance running uid matches crontab user uid, runas STUB_USER without -u flag.
+        '''
+        cron.__grains__ = {'os_family': 'RedHat'}
+        with patch.dict(cron.__salt__, {'cmd.run_stdout': MagicMock()}):
+            cron.raw_cron(STUB_USER)
+            cron.__salt__['cmd.run_stdout'].assert_called_with("crontab -l",
+                                                               runas=STUB_USER,
+                                                               rstrip=False,
+                                                               python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_raw_cron_foo_redhat(self):
+        '''
+        Assert that raw_cron() is called with the correct cron command and user: RedHat
+          - If instance running with uid that doesn't match crontab user uid, run with -u flag
+        '''
+        cron.__grains__ = {'os_family': 'RedHat'}
+        with patch.dict(cron.__salt__, {'cmd.run_stdout': MagicMock()}):
+            cron.raw_cron(STUB_USER)
+            cron.__salt__['cmd.run_stdout'].assert_called_with("crontab -u root -l",
+                                                               rstrip=False,
+                                                               python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_raw_cron_root_solaris(self):
+        '''
+        Assert that raw_cron() is called with the correct cron command and user: Solaris
+          - Solaris should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'Solaris'}
+        with patch.dict(cron.__salt__, {'cmd.run_stdout': MagicMock()}):
+            cron.raw_cron(STUB_USER)
+            cron.__salt__['cmd.run_stdout'].assert_called_with("crontab -l",
+                                                               runas=STUB_USER,
+                                                               rstrip=False,
+                                                               python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_raw_cron_foo_solaris(self):
+        '''
+        Assert that raw_cron() is called with the correct cron command and user: Solaris
+          - Solaris should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'Solaris'}
+        with patch.dict(cron.__salt__, {'cmd.run_stdout': MagicMock()}):
+            cron.raw_cron(STUB_USER)
+            cron.__salt__['cmd.run_stdout'].assert_called_with("crontab -l",
+                                                               runas=STUB_USER,
+                                                               rstrip=False,
+                                                               python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=True))
+    def test_raw_cron_root_aix(self):
+        '''
+        Assert that raw_cron() is called with the correct cron command and user: AIX
+          - AIX should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'AIX'}
+        with patch.dict(cron.__salt__, {'cmd.run_stdout': MagicMock()}):
+            cron.raw_cron(STUB_USER)
+            cron.__salt__['cmd.run_stdout'].assert_called_with("crontab -l",
+                                                               runas=STUB_USER,
+                                                               rstrip=False,
+                                                               python_shell=False)
+
+    @patch("salt.modules.cron._check_instance_uid_match", new=MagicMock(return_value=False))
+    def test_raw_cron_foo_aix(self):
+        '''
+        Assert that raw_cron() is called with the correct cron command and user: AIX
+          - AIX should always run without a -u flag
+        '''
+        cron.__grains__ = {'os_family': 'AIX'}
+        with patch.dict(cron.__salt__, {'cmd.run_stdout': MagicMock()}):
+            cron.raw_cron(STUB_USER)
+            cron.__salt__['cmd.run_stdout'].assert_called_with("crontab -l",
+                                                               runas=STUB_USER,
+                                                               rstrip=False,
+                                                               python_shell=False)
+
 
 @skipIf(NO_MOCK, NO_MOCK_REASON)
 class PsTestCase(TestCase):
@@ -613,6 +883,13 @@ class PsTestCase(TestCase):
     #     pass
     def test__get_cron_cmdstr(self):
         self.assertEqual('crontab /tmp', cron._get_cron_cmdstr(STUB_PATH))
+
+    # Test get_cron_cmdstr() when user is added
+    def test__get_cron_cmdstr_user(self):
+        '''
+        Passes if a user is added to crontab command
+        '''
+        self.assertEqual('crontab -u root /tmp', cron._get_cron_cmdstr(STUB_PATH, STUB_USER))
 
     def test__date_time_match(self):
         '''

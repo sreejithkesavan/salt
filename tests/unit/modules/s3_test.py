@@ -19,10 +19,10 @@ from salttesting.helpers import ensure_in_syspath
 ensure_in_syspath('../../')
 
 # Import Salt Libs
-import salt.utils.s3
 from salt.modules import s3
 
 s3.__salt__ = {}
+s3.__utils__ = {'s3.query': MagicMock(return_value='A')}
 
 
 @skipIf(NO_MOCK, NO_MOCK_REASON)
@@ -30,14 +30,16 @@ class S3TestCase(TestCase):
     def test__get_key_defaults(self):
         mock = MagicMock(return_value='')
         with patch.dict(s3.__salt__, {'config.option': mock}):
-            key, keyid, service_url, verify_ssl, kms_keyid, location, role_arn = (
-                s3._get_key(None, None, None, None, None, None, None))
+            key, keyid, service_url, verify_ssl, kms_keyid, location, role_arn, path_style, https_enable = (
+                s3._get_key(None, None, None, None, None, None, None, None, None))
             self.assertEqual(None, role_arn)
             self.assertEqual(None, key)
             self.assertEqual(None, keyid)
             self.assertEqual('s3.amazonaws.com', service_url)
             self.assertEqual('', verify_ssl)
             self.assertEqual('', location)
+            self.assertEqual('', path_style)
+            self.assertEqual('', https_enable)
 
     def test_delete(self):
         '''
@@ -46,9 +48,8 @@ class S3TestCase(TestCase):
         with patch.object(s3, '_get_key',
                           return_value=('key', 'keyid', 'service_url',
                                         'verify_ssl', 'kms_keyid', 'location',
-                                        'role_arn')):
-            with patch.object(salt.utils.s3, 'query', return_value='A'):
-                self.assertEqual(s3.delete('bucket'), 'A')
+                                        'role_arn', 'path_style', 'https_enable')):
+            self.assertEqual(s3.delete('bucket'), 'A')
 
     def test_get(self):
         '''
@@ -58,9 +59,8 @@ class S3TestCase(TestCase):
         with patch.object(s3, '_get_key',
                           return_value=('key', 'keyid', 'service_url',
                                         'verify_ssl', 'kms_keyid', 'location',
-                                        'role_arn')):
-            with patch.object(salt.utils.s3, 'query', return_value='A'):
-                self.assertEqual(s3.get(), 'A')
+                                        'role_arn', 'path_style', 'https_enable')):
+            self.assertEqual(s3.get(), 'A')
 
     def test_head(self):
         '''
@@ -69,9 +69,8 @@ class S3TestCase(TestCase):
         with patch.object(s3, '_get_key',
                           return_value=('key', 'keyid', 'service_url',
                                         'verify_ssl', 'kms_keyid', 'location',
-                                        'role_arn')):
-            with patch.object(salt.utils.s3, 'query', return_value='A'):
-                self.assertEqual(s3.head('bucket'), 'A')
+                                        'role_arn', 'path_style', 'https_enable')):
+            self.assertEqual(s3.head('bucket'), 'A')
 
     def test_put(self):
         '''
@@ -80,9 +79,8 @@ class S3TestCase(TestCase):
         with patch.object(s3, '_get_key',
                           return_value=('key', 'keyid', 'service_url',
                                         'verify_ssl', 'kms_keyid', 'location',
-                                        'role_arn')):
-            with patch.object(salt.utils.s3, 'query', return_value='A'):
-                self.assertEqual(s3.put('bucket'), 'A')
+                                        'role_arn', 'path_style', 'https_enable')):
+            self.assertEqual(s3.put('bucket'), 'A')
 
 
 if __name__ == '__main__':

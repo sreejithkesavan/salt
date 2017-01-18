@@ -24,7 +24,6 @@ from xml.etree import ElementTree
 import yaml
 import jinja2
 import jinja2.exceptions
-from xml.dom import minidom
 import salt.ext.six as six
 from salt.ext.six.moves import StringIO as _StringIO  # pylint: disable=import-error
 from xml.dom import minidom
@@ -1029,7 +1028,7 @@ def setmem(vm_, memory, config=False):
         salt '*' virt.setmem <domain> <size>
         salt '*' virt.setmem my_domain 768
     '''
-    if vm_state(vm_) != 'shutdown':
+    if vm_state(vm_)[vm_] != 'shutdown':
         return False
 
     dom = _get_domain(vm_)
@@ -1063,7 +1062,7 @@ def setvcpus(vm_, vcpus, config=False):
         salt '*' virt.setvcpus <domain> <amount>
         salt '*' virt.setvcpus my_domain 4
     '''
-    if vm_state(vm_) != 'shutdown':
+    if vm_state(vm_)[vm_] != 'shutdown':
         return False
 
     dom = _get_domain(vm_)
@@ -1320,9 +1319,11 @@ def create_xml_path(path):
 
         salt '*' virt.create_xml_path <path to XML file on the node>
     '''
-    if not os.path.isfile(path):
+    try:
+        with salt.utils.fopen(path, 'r') as fp_:
+            return create_xml_str(fp_.read())
+    except (OSError, IOError):
         return False
-    return create_xml_str(salt.utils.fopen(path, 'r').read())
 
 
 def define_xml_str(xml):
@@ -1350,9 +1351,11 @@ def define_xml_path(path):
         salt '*' virt.define_xml_path <path to XML file on the node>
 
     '''
-    if not os.path.isfile(path):
+    try:
+        with salt.utils.fopen(path, 'r') as fp_:
+            return define_xml_str(fp_.read())
+    except (OSError, IOError):
         return False
-    return define_xml_str(salt.utils.fopen(path, 'r').read())
 
 
 def define_vol_xml_str(xml):
@@ -1382,9 +1385,11 @@ def define_vol_xml_path(path):
         salt '*' virt.define_vol_xml_path <path to XML file on the node>
 
     '''
-    if not os.path.isfile(path):
+    try:
+        with salt.utils.fopen(path, 'r') as fp_:
+            return define_vol_xml_str(fp_.read())
+    except (OSError, IOError):
         return False
-    return define_vol_xml_str(salt.utils.fopen(path, 'r').read())
 
 
 def migrate_non_shared(vm_, target, ssh=False):
@@ -1574,8 +1579,9 @@ def is_kvm_hyper():
         salt '*' virt.is_kvm_hyper
     '''
     try:
-        if 'kvm_' not in salt.utils.fopen('/proc/modules').read():
-            return False
+        with salt.utils.fopen('/proc/modules') as fp_:
+            if 'kvm_' not in fp_.read():
+                return False
     except IOError:
         # No /proc/modules? Are we on Windows? Or Solaris?
         return False
@@ -1599,9 +1605,10 @@ def is_xen_hyper():
         # virtual_subtype isn't set everywhere.
         return False
     try:
-        if 'xen_' not in salt.utils.fopen('/proc/modules').read():
-            return False
-    except IOError:
+        with salt.utils.fopen('/proc/modules') as fp_:
+            if 'xen_' not in fp_.read():
+                return False
+    except (OSError, IOError):
         # No /proc/modules? Are we on Windows? Or Solaris?
         return False
     return 'libvirtd' in __salt__['cmd.run'](__grains__['ps'])
@@ -1974,58 +1981,6 @@ def revert_snapshot(name, snapshot=None, cleanup=False):
         ret['deleted'] = 'N/A'
 
     return ret
-
-
-# Deprecated aliases
-def create(domain):
-    '''
-    .. deprecated:: 2016.3.0
-       Use :py:func:`~salt.modules.virt.start` instead.
-
-    Start a defined domain
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' virt.create <domain>
-    '''
-    salt.utils.warn_until('Nitrogen', 'Use "virt.start" instead.')
-    return start(domain)
-
-
-def destroy(domain):
-    '''
-    .. deprecated:: 2016.3.0
-       Use :py:func:`~salt.modules.virt.stop` instead.
-
-    Power off a defined domain
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' virt.destroy <domain>
-    '''
-    salt.utils.warn_until('Nitrogen', 'Use "virt.stop" instead.')
-    return stop(domain)
-
-
-def list_vms():
-    '''
-    .. deprecated:: 2016.3.0
-       Use :py:func:`~salt.modules.virt.list_domains` instead.
-
-    List all virtual machines.
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' virt.list_vms <domain>
-    '''
-    salt.utils.warn_until('Nitrogen', 'Use "virt.list_domains" instead.')
-    return list_domains()
 
 
 def _capabilities():

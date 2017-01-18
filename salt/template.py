@@ -13,6 +13,7 @@ import logging
 
 # Import salt libs
 import salt.utils
+import salt.utils.files
 from salt.utils.odict import OrderedDict
 from salt._compat import string_io
 from salt.ext.six import string_types
@@ -30,6 +31,8 @@ SLS_ENCODER = codecs.getencoder(SLS_ENCODING)
 def compile_template(template,
                      renderers,
                      default,
+                     blacklist,
+                     whitelist,
                      saltenv='base',
                      sls='',
                      input_data='',
@@ -49,7 +52,7 @@ def compile_template(template,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -76,7 +79,7 @@ def compile_template(template,
                 return ret
 
     # Get the list of render funcs in the render pipe line.
-    render_pipe = template_shebang(template, renderers, default, input_data)
+    render_pipe = template_shebang(template, renderers, default, blacklist, whitelist, input_data)
 
     input_data = string_io(input_data)
     for render, argline in render_pipe:
@@ -86,7 +89,7 @@ def compile_template(template,
             try:
                 input_data.seek(0)
             except Exception as exp:
-                log.error('error: {0}'.format(exp))
+                log.error('error while compiling template \'{0}\': {1}'.format(template, exp))
 
         render_kwargs = dict(renderers=renderers, tmplpath=template)
         render_kwargs.update(kwargs)
@@ -121,18 +124,18 @@ def compile_template(template,
     return ret
 
 
-def compile_template_str(template, renderers, default):
+def compile_template_str(template, renderers, default, blacklist, whitelist):
     '''
     Take template as a string and return the high data structure
     derived from the template.
     '''
-    fn_ = salt.utils.mkstemp()
+    fn_ = salt.utils.files.mkstemp()
     with salt.utils.fopen(fn_, 'wb') as ofile:
         ofile.write(SLS_ENCODER(template)[0])
-    return compile_template(fn_, renderers, default)
+    return compile_template(fn_, renderers, default, blacklist, whitelist)
 
 
-def template_shebang(template, renderers, default, input_data):
+def template_shebang(template, renderers, default, blacklist, whitelist, input_data):
     '''
     Check the template shebang line and return the list of renderers specified
     in the pipe.
@@ -164,10 +167,10 @@ def template_shebang(template, renderers, default, input_data):
     if line.startswith('#!') and not line.startswith('#!/'):
 
         # pull out the shebang data
-        render_pipe = check_render_pipe_str(line.strip()[2:], renderers)
+        render_pipe = check_render_pipe_str(line.strip()[2:], renderers, blacklist, whitelist)
 
     if not render_pipe:
-        render_pipe = check_render_pipe_str(default, renderers)
+        render_pipe = check_render_pipe_str(default, renderers, blacklist, whitelist)
 
     return render_pipe
 
@@ -193,7 +196,7 @@ for comb in '''
     OLD_STYLE_RENDERERS[comb] = '{0}|{1}'.format(tmpl, fmt)
 
 
-def check_render_pipe_str(pipestr, renderers):
+def check_render_pipe_str(pipestr, renderers, blacklist, whitelist):
     '''
     Check that all renderers specified in the pipe string are available.
     If so, return the list of render functions in the pipe as
@@ -209,6 +212,10 @@ def check_render_pipe_str(pipestr, renderers):
             parts = OLD_STYLE_RENDERERS[pipestr].split('|')
         for part in parts:
             name, argline = (part + ' ').split(' ', 1)
+            if whitelist and name not in whitelist or \
+                    blacklist and name in blacklist:
+                log.warning('The renderer "{0}" is disallowed by cofiguration and will be skipped.'.format(name))
+                continue
             results.append((renderers[name], argline.strip()))
         return results
     except KeyError:

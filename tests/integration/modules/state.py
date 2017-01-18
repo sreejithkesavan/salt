@@ -5,6 +5,8 @@ from __future__ import absolute_import
 import os
 import shutil
 import textwrap
+import threading
+import time
 
 # Import Salt Testing libs
 from salttesting import skipIf
@@ -27,6 +29,11 @@ class StateModuleTest(integration.ModuleCase,
     '''
 
     maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        mod_case = integration.ModuleCase()
+        mod_case.run_function('saltutil.sync_all')
 
     def test_show_highstate(self):
         '''
@@ -66,6 +73,47 @@ class StateModuleTest(integration.ModuleCase,
         '''
         sls = self.run_function('state.show_sls', mods='recurse_ok_two')
         self.assertIn('/etc/nagios/nrpe.cfg', sls)
+
+    def test_running_dictionary_consistency(self):
+        '''
+        Test the structure of the running dictionary so we don't change it
+        without deprecating/documenting the change
+        '''
+        running_dict_fields = [
+            '__id__',
+            '__run_num__',
+            '__sls__',
+            'changes',
+            'comment',
+            'duration',
+            'name',
+            'result',
+            'start_time',
+        ]
+
+        sls = self.run_function('state.single',
+                fun='test.succeed_with_changes',
+                name='gndn')
+
+        for state, ret in sls.items():
+            for field in running_dict_fields:
+                self.assertIn(field, ret)
+
+    def test_running_dictionary_key_sls(self):
+        '''
+        Ensure the __sls__ key is either null or a string
+        '''
+        sls1 = self.run_function('state.single',
+                fun='test.succeed_with_changes',
+                name='gndn')
+
+        sls2 = self.run_function('state.sls', mods='gndn')
+
+        for state, ret in sls1.items():
+            self.assertTrue(isinstance(ret['__sls__'], type(None)))
+
+        for state, ret in sls2.items():
+            self.assertTrue(isinstance(ret['__sls__'], str))
 
     def _remove_request_cache_file(self):
         '''
@@ -112,9 +160,19 @@ class StateModuleTest(integration.ModuleCase,
         '''
         self._remove_request_cache_file()
 
-        self.run_function('state.request', mods='modules.state.requested')
+        if salt.utils.is_windows():
+            self.run_function('state.request', mods='modules.state.requested_win')
+        else:
+            self.run_function('state.request', mods='modules.state.requested')
+
         ret = self.run_function('state.run_request')
-        result = ret['cmd_|-count_root_dir_contents_|-ls -a / | wc -l_|-run']['result']
+
+        if salt.utils.is_windows():
+            key = 'cmd_|-count_root_dir_contents_|-Get-ChildItem C:\\\\ | Measure-Object | %{$_.Count}_|-run'
+        else:
+            key = 'cmd_|-count_root_dir_contents_|-ls -a / | wc -l_|-run'
+
+        result = ret[key]['result']
         self.assertTrue(result)
 
     def test_run_request_failed_no_request_staged(self):
@@ -145,17 +203,33 @@ class StateModuleTest(integration.ModuleCase,
         ret = self.run_function('state.sls', mods='testappend.step-2')
         self.assertSaltTrueReturn(ret)
 
-        self.assertMultiLineEqual(textwrap.dedent('''\
+        with salt.utils.fopen(testfile, 'r') as fp_:
+            testfile_contents = fp_.read()
+
+        contents = textwrap.dedent('''\
             # set variable identifying the chroot you work in (used in the prompt below)
             if [ -z "$debian_chroot" ] && [ -r /etc/debian_chroot ]; then
                 debian_chroot=$(cat /etc/debian_chroot)
             fi
+            ''')
 
+        if not salt.utils.is_windows():
+            contents += os.linesep
+
+        contents += textwrap.dedent('''\
             # enable bash completion in interactive shells
             if [ -f /etc/bash_completion ] && ! shopt -oq posix; then
                 . /etc/bash_completion
             fi
-            '''), salt.utils.fopen(testfile, 'r').read())
+            ''')
+
+        if salt.utils.is_windows():
+            new_contents = contents.splitlines()
+            contents = os.linesep.join(new_contents)
+            contents += os.linesep
+
+        self.assertMultiLineEqual(
+                contents, testfile_contents)
 
         # Re-append switching order
         ret = self.run_function('state.sls', mods='testappend.step-2')
@@ -164,17 +238,10 @@ class StateModuleTest(integration.ModuleCase,
         ret = self.run_function('state.sls', mods='testappend.step-1')
         self.assertSaltTrueReturn(ret)
 
-        self.assertMultiLineEqual(textwrap.dedent('''\
-            # set variable identifying the chroot you work in (used in the prompt below)
-            if [ -z "$debian_chroot" ] && [ -r /etc/debian_chroot ]; then
-                debian_chroot=$(cat /etc/debian_chroot)
-            fi
+        with salt.utils.fopen(testfile, 'r') as fp_:
+            testfile_contents = fp_.read()
 
-            # enable bash completion in interactive shells
-            if [ -f /etc/bash_completion ] && ! shopt -oq posix; then
-                . /etc/bash_completion
-            fi
-            '''), salt.utils.fopen(testfile, 'r').read())
+        self.assertMultiLineEqual(contents, testfile_contents)
 
     def test_issue_1876_syntax_error(self):
         '''
@@ -199,7 +266,7 @@ class StateModuleTest(integration.ModuleCase,
         )
 
     def test_issue_1879_too_simple_contains_check(self):
-        contents = textwrap.dedent('''\
+        expected = textwrap.dedent('''\
             # set variable identifying the chroot you work in (used in the prompt below)
             if [ -z "$debian_chroot" ] && [ -r /etc/debian_chroot ]; then
                 debian_chroot=$(cat /etc/debian_chroot)
@@ -209,6 +276,12 @@ class StateModuleTest(integration.ModuleCase,
                 . /etc/bash_completion
             fi
             ''')
+
+        if salt.utils.is_windows():
+            new_contents = expected.splitlines()
+            expected = os.linesep.join(new_contents)
+            expected += os.linesep
+
         testfile = os.path.join(integration.TMP, 'issue-1879')
         # Delete if exiting
         if os.path.isfile(testfile):
@@ -232,10 +305,9 @@ class StateModuleTest(integration.ModuleCase,
 
         # Does it match?
         try:
-            self.assertMultiLineEqual(
-                contents,
-                salt.utils.fopen(testfile, 'r').read()
-            )
+            with salt.utils.fopen(testfile, 'r') as fp_:
+                contents = fp_.read()
+            self.assertMultiLineEqual(expected, contents)
             # Make sure we don't re-append existing text
             ret = self.run_function(
                 'state.sls', mods='issue-1879.step-1', timeout=120
@@ -246,10 +318,10 @@ class StateModuleTest(integration.ModuleCase,
                 'state.sls', mods='issue-1879.step-2', timeout=120
             )
             self.assertSaltTrueReturn(ret)
-            self.assertMultiLineEqual(
-                contents,
-                salt.utils.fopen(testfile, 'r').read()
-            )
+
+            with salt.utils.fopen(testfile, 'r') as fp_:
+                contents = fp_.read()
+            self.assertMultiLineEqual(expected, contents)
         except Exception:
             if os.path.exists(testfile):
                 shutil.copy(testfile, testfile + '.bak')
@@ -321,39 +393,24 @@ class StateModuleTest(integration.ModuleCase,
             'files', 'file', 'base', 'issue-2068-template-str-no-dot.sls'
         )
 
-        template = salt.utils.fopen(template_path, 'r').read()
-        try:
+        with salt.utils.fopen(template_path, 'r') as fp_:
+            template = fp_.read()
             ret = self.run_function(
                 'state.template_str', [template], timeout=120
             )
             self.assertSaltTrueReturn(ret)
 
-            self.assertTrue(
-                os.path.isfile(os.path.join(venv_dir, 'bin', 'pep8'))
-            )
-        finally:
-            if os.path.isdir(venv_dir):
-                shutil.rmtree(venv_dir)
-
         # Now using state.template
-        try:
-            ret = self.run_function(
-                'state.template', [template_path], timeout=120
-            )
-            self.assertSaltTrueReturn(ret)
-        finally:
-            if os.path.isdir(venv_dir):
-                shutil.rmtree(venv_dir)
+        ret = self.run_function(
+            'state.template', [template_path], timeout=120
+        )
+        self.assertSaltTrueReturn(ret)
 
         # Now the problematic #2068 including dot's
-        try:
-            ret = self.run_function(
-                'state.sls', mods='issue-2068-template-str', timeout=120
-            )
-            self.assertSaltTrueReturn(ret)
-        finally:
-            if os.path.isdir(venv_dir):
-                shutil.rmtree(venv_dir)
+        ret = self.run_function(
+            'state.sls', mods='issue-2068-template-str', timeout=120
+        )
+        self.assertSaltTrueReturn(ret)
 
         # Let's load the template from the filesystem. If running this state
         # with state.sls works, so should using state.template_str
@@ -362,29 +419,18 @@ class StateModuleTest(integration.ModuleCase,
             'files', 'file', 'base', 'issue-2068-template-str.sls'
         )
 
-        template = salt.utils.fopen(template_path, 'r').read()
-        try:
-            ret = self.run_function(
-                'state.template_str', [template], timeout=120
-            )
-            self.assertSaltTrueReturn(ret)
-
-            self.assertTrue(
-                os.path.isfile(os.path.join(venv_dir, 'bin', 'pep8'))
-            )
-        finally:
-            if os.path.isdir(venv_dir):
-                shutil.rmtree(venv_dir)
+        with salt.utils.fopen(template_path, 'r') as fp_:
+            template = fp_.read()
+        ret = self.run_function(
+            'state.template_str', [template], timeout=120
+        )
+        self.assertSaltTrueReturn(ret)
 
         # Now using state.template
-        try:
-            ret = self.run_function(
-                'state.template', [template_path], timeout=120
-            )
-            self.assertSaltTrueReturn(ret)
-        finally:
-            if os.path.isdir(venv_dir):
-                shutil.rmtree(venv_dir)
+        ret = self.run_function(
+            'state.template', [template_path], timeout=120
+        )
+        self.assertSaltTrueReturn(ret)
 
     def test_template_invalid_items(self):
         TEMPLATE = textwrap.dedent('''\
@@ -999,6 +1045,21 @@ class StateModuleTest(integration.ModuleCase,
         expected_result = 'State was not run because onfail req did not change'
         self.assertIn(expected_result, test_data)
 
+    def test_multiple_onfail_requisite(self):
+        '''
+        test to ensure state is run even if only one
+        of the onfails fails. This is a test for the issue:
+        https://github.com/saltstack/salt/issues/22370
+        '''
+
+        state_run = self.run_function('state.sls', mods='requisites.onfail_multiple')
+
+        retcode = state_run['cmd_|-c_|-echo itworked_|-run']['changes']['retcode']
+        self.assertEqual(retcode, 0)
+
+        stdout = state_run['cmd_|-c_|-echo itworked_|-run']['changes']['stdout']
+        self.assertEqual(stdout, 'itworked')
+
     def test_onfail_in_requisite(self):
         '''
         Tests a simple state using the onfail_in requisite
@@ -1093,6 +1154,90 @@ class StateModuleTest(integration.ModuleCase,
         self.assertIn(bar_state, state_run)
         self.assertEqual(state_run[bar_state]['comment'],
                          'Command "echo bar" run')
+
+    def test_retry_option_defaults(self):
+        '''
+        test the retry option on a simple state with defaults
+        ensure comment is as expected
+        ensure state duration is greater than default retry_interval (30 seconds)
+        '''
+        state_run = self.run_function(
+            'state.sls',
+            mods='retry.retry_defaults'
+        )
+        retry_state = 'file_|-file_test_|-/path/to/a/non-existent/file.txt_|-exists'
+        expected_comment = ('Attempt 1: Returned a result of "False", with the following '
+                'comment: "Specified path /path/to/a/non-existent/file.txt does not exist"\n'
+                'Specified path /path/to/a/non-existent/file.txt does not exist')
+        self.assertEqual(state_run[retry_state]['comment'], expected_comment)
+        self.assertTrue(state_run[retry_state]['duration'] > 30)
+        self.assertEqual(state_run[retry_state]['result'], False)
+
+    def test_retry_option_custom(self):
+        '''
+        test the retry option on a simple state with custom retry values
+        ensure comment is as expected
+        ensure state duration is greater than custom defined interval * (retries - 1)
+        '''
+        state_run = self.run_function(
+            'state.sls',
+            mods='retry.retry_custom'
+        )
+        retry_state = 'file_|-file_test_|-/path/to/a/non-existent/file.txt_|-exists'
+        expected_comment = ('Attempt 1: Returned a result of "False", with the following '
+                'comment: "Specified path /path/to/a/non-existent/file.txt does not exist"\n'
+                'Attempt 2: Returned a result of "False", with the following comment: "Specified'
+                ' path /path/to/a/non-existent/file.txt does not exist"\nAttempt 3: Returned'
+                ' a result of "False", with the following comment: "Specified path'
+                ' /path/to/a/non-existent/file.txt does not exist"\nAttempt 4: Returned a'
+                ' result of "False", with the following comment: "Specified path'
+                ' /path/to/a/non-existent/file.txt does not exist"\nSpecified path'
+                ' /path/to/a/non-existent/file.txt does not exist')
+        self.assertEqual(state_run[retry_state]['comment'], expected_comment)
+        self.assertTrue(state_run[retry_state]['duration'] > 40)
+        self.assertEqual(state_run[retry_state]['result'], False)
+
+    def test_retry_option_success(self):
+        '''
+        test a state with the retry option that should return True immedietly (i.e. no retries)
+        '''
+        testfile = os.path.join(integration.TMP, 'retry_file')
+        state_run = self.run_function(
+            'state.sls',
+            mods='retry.retry_success'
+        )
+        os.unlink(testfile)
+        retry_state = 'file_|-file_test_|-{0}_|-exists'.format(testfile)
+        self.assertNotIn('Attempt', state_run[retry_state]['comment'])
+
+    def run_create(self):
+        '''
+        helper function to wait 30 seconds and then create the temp retry file
+        '''
+        testfile = os.path.join(integration.TMP, 'retry_file')
+        time.sleep(30)
+        open(testfile, 'a').close()
+
+    def test_retry_option_eventual_success(self):
+        '''
+        test a state with the retry option that should return True after at least 4 retry attmempt
+        but never run 15 attempts
+        '''
+        testfile = os.path.join(integration.TMP, 'retry_file')
+        create_thread = threading.Thread(target=self.run_create)
+        create_thread.start()
+        state_run = self.run_function(
+            'state.sls',
+            mods='retry.retry_success2'
+        )
+        retry_state = 'file_|-file_test_|-{0}_|-exists'.format(testfile)
+        self.assertIn('Attempt 1:', state_run[retry_state]['comment'])
+        self.assertIn('Attempt 2:', state_run[retry_state]['comment'])
+        self.assertIn('Attempt 3:', state_run[retry_state]['comment'])
+        self.assertIn('Attempt 4:', state_run[retry_state]['comment'])
+        self.assertNotIn('Attempt 15:', state_run[retry_state]['comment'])
+        self.assertEqual(state_run[retry_state]['result'], True)
+
 
 if __name__ == '__main__':
     from integration import run_tests

@@ -13,6 +13,7 @@ ensure_in_syspath('../../')
 
 # Import salt libs
 from salt.modules import postgres
+from salt.exceptions import SaltInvocationError
 
 postgres.__grains__ = None  # in order to stub it w/patch below
 postgres.__salt__ = None  # in order to stub it w/patch below
@@ -90,13 +91,13 @@ class PostgresTestCase(TestCase):
                           owner='otheruser',
                           runas='foo')
         postgres._run_psql.assert_has_calls([
-            call(['/usr/bin/pgsql', '--no-align', '--no-readline',
+            call(['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                   '--no-password', '--username', 'testuser', '--host',
                   'testhost', '--port', 'testport', '--dbname', 'maint_db',
                   '-c', 'ALTER DATABASE "dbname" OWNER TO "otheruser"'],
                  host='testhost', user='testuser',
                  password='foo', runas='foo', port='testport'),
-            call(['/usr/bin/pgsql', '--no-align', '--no-readline',
+            call(['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                   '--no-password', '--username', 'testuser', '--host',
                   'testhost', '--port', 'testport', '--dbname', 'maint_db',
                   '-c', 'ALTER DATABASE "dbname" SET TABLESPACE "testspace"'],
@@ -141,13 +142,36 @@ class PostgresTestCase(TestCase):
         )
 
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'maint_db',
-             '-c', 'CREATE DATABASE "dbname" WITH TABLESPACE = testspace '
+             '-c', 'CREATE DATABASE "dbname" WITH TABLESPACE = "testspace" '
                    'OWNER = "otheruser"'],
             host='testhost', user='testuser',
             password='foo', runas='foo', port='testport')
+
+    @patch('salt.modules.postgres._run_psql',
+           Mock(return_value={'retcode': 0}))
+    def test_db_create_empty_string_param(self):
+        postgres.db_create('dbname', lc_collate='', encoding='utf8',
+                user='testuser', host='testhost', port=1234,
+                maintenance_db='maint_db', password='foo')
+
+        postgres._run_psql.assert_called_once_with(
+                ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
+                    '--no-password', '--username', 'testuser', '--host',
+                    'testhost', '--port', '1234', '--dbname', 'maint_db', '-c',
+                    'CREATE DATABASE "dbname" WITH ENCODING = \'utf8\' '
+                    'LC_COLLATE = \'\''], host='testhost', password='foo',
+                port=1234, runas=None, user='testuser')
+
+    @patch('salt.modules.postgres._run_psql',
+           Mock(return_value={'retcode': 0}))
+    def test_db_create_with_trivial_sql_injection(self):
+        self.assertRaises(
+                SaltInvocationError,
+                postgres.db_create,
+                'dbname', lc_collate="foo' ENCODING='utf8")
 
     @patch('salt.modules.postgres._run_psql',
            Mock(return_value={'retcode': 0,
@@ -209,7 +233,7 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'maint_db',
              '-c', 'DROP DATABASE "test_db"'],
@@ -237,11 +261,11 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
-            postgres._run_psql.call_args[0][0][13].startswith('CREATE ROLE')
+            postgres._run_psql.call_args[0][0][14].startswith('CREATE ROLE')
         )
 
     @patch('salt.modules.postgres._run_psql',
@@ -258,7 +282,7 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'maint_db',
              '-c', 'DROP ROLE "testgroup"'],
@@ -286,13 +310,13 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
             re.match(
                 'ALTER.* "testgroup" .* UNENCRYPTED PASSWORD',
-                postgres._run_psql.call_args[0][0][13]
+                postgres._run_psql.call_args[0][0][14]
             )
         )
 
@@ -320,10 +344,10 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
-        call = postgres._run_psql.call_args[0][0][13]
+        # query will be in the 15th argument.
+        call = postgres._run_psql.call_args[0][0][14]
         self.assertTrue(re.match('CREATE ROLE "testuser"', call))
         for i in (
             'INHERIT NOCREATEDB NOCREATEROLE '
@@ -418,7 +442,7 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'maint_db',
              '-c', 'DROP ROLE "testuser"'],
@@ -449,16 +473,16 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
             re.match(
                 'ALTER ROLE "test_username" WITH  INHERIT NOCREATEDB '
                 'NOCREATEROLE NOREPLICATION LOGIN '
                 'UNENCRYPTED PASSWORD [\'"]{0,5}test_role_pass[\'"]{0,5};'
                 ' GRANT "test_groups" TO "test_username"',
-                postgres._run_psql.call_args[0][0][13]
+                postgres._run_psql.call_args[0][0][14]
             )
         )
 
@@ -485,15 +509,15 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
             re.match(
                 'ALTER ROLE "test_username" WITH  INHERIT NOCREATEDB '
                 'CREATEROLE NOREPLICATION LOGIN;'
                 ' GRANT "test_groups" TO "test_username"',
-                postgres._run_psql.call_args[0][0][13]
+                postgres._run_psql.call_args[0][0][14]
             )
         )
 
@@ -521,15 +545,15 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
             re.match(
                 'ALTER ROLE "test_username" WITH  INHERIT NOCREATEDB '
                 'CREATEROLE NOREPLICATION LOGIN NOPASSWORD;'
                 ' GRANT "test_groups" TO "test_username"',
-                postgres._run_psql.call_args[0][0][13]
+                postgres._run_psql.call_args[0][0][14]
             )
         )
 
@@ -557,9 +581,9 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
             re.match(
                 'ALTER ROLE "test_username" WITH  INHERIT NOCREATEDB '
@@ -567,7 +591,7 @@ class PostgresTestCase(TestCase):
                 'ENCRYPTED PASSWORD '
                 '[\'"]{0,5}md531c27e68d3771c392b52102c01be1da1[\'"]{0,5}'
                 '; GRANT "test_groups" TO "test_username"',
-                postgres._run_psql.call_args[0][0][13]
+                postgres._run_psql.call_args[0][0][14]
             )
         )
 
@@ -583,13 +607,13 @@ class PostgresTestCase(TestCase):
             runas='foo'
         )
         # postgres._run_psql.call_args[0][0] will contain the list of CLI args.
-        # The first 13 elements of this list are initial args used in all (or
+        # The first 14 elements of this list are initial args used in all (or
         # virtually all) commands run through _run_psql(), so the actual SQL
-        # query will be in the 14th argument.
+        # query will be in the 15th argument.
         self.assertTrue(
             re.match(
                 'SELECT setting FROM pg_catalog.pg_settings',
-                postgres._run_psql.call_args[0][0][13]
+                postgres._run_psql.call_args[0][0][14]
             )
         )
 
@@ -830,7 +854,7 @@ class PostgresTestCase(TestCase):
             db_password='testpassword'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'maint_db',
              '-c', 'CREATE SCHEMA "testschema"'],
@@ -863,7 +887,7 @@ class PostgresTestCase(TestCase):
             db_password='testpassword'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'maint_db',
              '-c', 'DROP SCHEMA "testschema"'],
@@ -913,7 +937,7 @@ class PostgresTestCase(TestCase):
     @patch('salt.modules.postgres.language_exists', Mock(return_value=True))
     def test_language_exists(self):
         '''
-        Test language existance check
+        Test language existence check
         '''
         ret = postgres.language_exists(
             'sql',
@@ -938,7 +962,7 @@ class PostgresTestCase(TestCase):
             password='testpassword'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'testdb',
              '-c', 'CREATE LANGUAGE plpythonu'],
@@ -978,7 +1002,7 @@ class PostgresTestCase(TestCase):
             password='testpassword'
         )
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'testdb',
              '-c', 'DROP LANGUAGE plpgsql'],
@@ -1053,7 +1077,7 @@ class PostgresTestCase(TestCase):
         "ORDER BY relname) TO STDOUT WITH CSV HEADER")
 
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'db_name',
              '-v', 'datestyle=ISO,MDY', '-c', query],
@@ -1092,7 +1116,7 @@ class PostgresTestCase(TestCase):
         "TO STDOUT WITH CSV HEADER")
 
         postgres._run_psql.assert_called_once_with(
-            ['/usr/bin/pgsql', '--no-align', '--no-readline',
+            ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
              '--no-password', '--username', 'testuser', '--host',
              'testhost', '--port', 'testport', '--dbname', 'db_name',
              '-v', 'datestyle=ISO,MDY', '-c', query],
@@ -1240,10 +1264,10 @@ class PostgresTestCase(TestCase):
                    password='testpassword'
                 )
 
-                query = 'GRANT ALL ON TABLE public.awl TO baruwa WITH GRANT OPTION'
+                query = 'GRANT ALL ON TABLE public."awl" TO "baruwa" WITH GRANT OPTION'
 
                 postgres._run_psql.assert_called_once_with(
-                    ['/usr/bin/pgsql', '--no-align', '--no-readline',
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                      '--no-password', '--username', 'testuser', '--host',
                      'testhost', '--port', 'testport', '--dbname', 'db_name',
                      '-c', query],
@@ -1267,10 +1291,38 @@ class PostgresTestCase(TestCase):
                    password='testpassword'
                 )
 
-                query = 'GRANT ALL ON TABLE public.awl TO baruwa'
+                query = 'GRANT ALL ON TABLE public."awl" TO "baruwa"'
 
                 postgres._run_psql.assert_called_once_with(
-                    ['/usr/bin/pgsql', '--no-align', '--no-readline',
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
+                     '--no-password', '--username', 'testuser', '--host',
+                     'testhost', '--port', 'testport', '--dbname', 'db_name',
+                     '-c', query],
+                    host='testhost', port='testport',
+                    password='testpassword', user='testuser', runas='user')
+
+        # Test grant on all tables
+        with patch('salt.modules.postgres._run_psql',
+            Mock(return_value={'retcode': 0})):
+            with patch('salt.modules.postgres.has_privileges',
+                    Mock(return_value=False)):
+                ret = postgres.privileges_grant(
+                   'baruwa',
+                   'ALL',
+                   'table',
+                   'SELECT',
+                   maintenance_db='db_name',
+                   runas='user',
+                   host='testhost',
+                   port='testport',
+                   user='testuser',
+                   password='testpassword'
+                )
+
+                query = 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "baruwa"'
+
+                postgres._run_psql.assert_called_once_with(
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                      '--no-password', '--username', 'testuser', '--host',
                      'testhost', '--port', 'testport', '--dbname', 'db_name',
                      '-c', query],
@@ -1298,10 +1350,10 @@ class PostgresTestCase(TestCase):
                    password='testpassword'
                 )
 
-                query = 'GRANT admins TO baruwa WITH ADMIN OPTION'
+                query = 'GRANT admins TO "baruwa" WITH ADMIN OPTION'
 
                 postgres._run_psql.assert_called_once_with(
-                    ['/usr/bin/pgsql', '--no-align', '--no-readline',
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                      '--no-password', '--username', 'testuser', '--host',
                      'testhost', '--port', 'testport', '--dbname', 'db_name',
                      '-c', query],
@@ -1324,10 +1376,10 @@ class PostgresTestCase(TestCase):
                    password='testpassword'
                 )
 
-                query = 'GRANT admins TO baruwa'
+                query = 'GRANT admins TO "baruwa"'
 
                 postgres._run_psql.assert_called_once_with(
-                    ['/usr/bin/pgsql', '--no-align', '--no-readline',
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                      '--no-password', '--username', 'testuser', '--host',
                      'testhost', '--port', 'testport', '--dbname', 'db_name',
                      '-c', query],
@@ -1358,7 +1410,7 @@ class PostgresTestCase(TestCase):
                 query = 'REVOKE ALL ON TABLE public.awl FROM baruwa'
 
                 postgres._run_psql.assert_called_once_with(
-                    ['/usr/bin/pgsql', '--no-align', '--no-readline',
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                      '--no-password', '--username', 'testuser', '--host',
                      'testhost', '--port', 'testport', '--dbname', 'db_name',
                      '-c', query],
@@ -1388,7 +1440,7 @@ class PostgresTestCase(TestCase):
                 query = 'REVOKE admins FROM baruwa'
 
                 postgres._run_psql.assert_called_once_with(
-                    ['/usr/bin/pgsql', '--no-align', '--no-readline',
+                    ['/usr/bin/pgsql', '--no-align', '--no-readline', '--no-psqlrc',
                      '--no-password', '--username', 'testuser', '--host',
                      'testhost', '--port', 'testport', '--dbname', 'db_name',
                      '-c', query],

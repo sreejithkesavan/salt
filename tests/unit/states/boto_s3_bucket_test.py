@@ -4,23 +4,26 @@
 from __future__ import absolute_import
 from distutils.version import LooseVersion  # pylint: disable=import-error,no-name-in-module
 from copy import deepcopy
+import logging
+import random
+import string
 
 # Import Salt Testing libs
 from salttesting.unit import skipIf, TestCase
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, patch
+from salttesting.mock import (
+    MagicMock,
+    NO_MOCK,
+    NO_MOCK_REASON,
+    patch
+)
 from salttesting.helpers import ensure_in_syspath
 
 ensure_in_syspath('../../')
 
 # Import Salt libs
-import salt.config
+import salt.ext.six as six
 import salt.loader
-
-# Import 3rd-party libs
-import logging
-
-# Import Mock libraries
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, MagicMock, patch
+from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 
 # pylint: disable=import-error,no-name-in-module,unused-import
 from unit.modules.boto_s3_bucket_test import BotoS3BucketTestCaseMixin
@@ -87,6 +90,7 @@ if _has_required_boto():
             'CreationDate': None
         }],
         'Owner': {
+            'Type': 'CanonicalUser',
             'DisplayName': 'testuser',
             'ID': '111111222222'
         },
@@ -174,12 +178,7 @@ if _has_required_boto():
         'get_bucket_acl': {
             'Grants': [{
                 'Grantee': {
-                    'DisplayName': 'testuser',
-                    'ID': '111111222222'
-                },
-                'Permission': 'FULL_CONTROL'
-            }, {
-                'Grantee': {
+                    'Type': 'Group',
                     'URI': 'http://acs.amazonaws.com/groups/global/AllUsers'
                 },
                 'Permission': 'READ'
@@ -273,12 +272,21 @@ if _has_required_boto():
     }
 
 
+@skipIf(HAS_BOTO is False, 'The boto module must be installed.')
+@skipIf(_has_required_boto() is False, 'The boto3 module must be greater than'
+                                       ' or equal to version {0}'
+        .format(required_boto3_version))
+@skipIf(NO_MOCK, NO_MOCK_REASON)
 class BotoS3BucketStateTestCaseBase(TestCase):
     conn = None
 
     # Set up MagicMock to replace the boto3 session
     def setUp(self):
         context.clear()
+        # connections keep getting cached from prior tests, can't find the
+        # correct context object to clear it. So randomize the cache key, to prevent any
+        # cache hits
+        conn_parameters['key'] = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(50))
 
         self.patcher = patch('boto3.session.Session')
         self.addCleanup(self.patcher.stop)
@@ -289,11 +297,6 @@ class BotoS3BucketStateTestCaseBase(TestCase):
         session_instance.client.return_value = self.conn
 
 
-@skipIf(HAS_BOTO is False, 'The boto module must be installed.')
-@skipIf(_has_required_boto() is False, 'The boto3 module must be greater than'
-                                       ' or equal to version {0}'
-        .format(required_boto3_version))
-@skipIf(NO_MOCK, NO_MOCK_REASON)
 class BotoS3BucketTestCase(BotoS3BucketStateTestCaseBase, BotoS3BucketTestCaseMixin):
     '''
     TestCase for salt.modules.boto_s3_bucket state.module
@@ -306,7 +309,7 @@ class BotoS3BucketTestCase(BotoS3BucketStateTestCaseBase, BotoS3BucketTestCaseMi
         self.conn.head_bucket.side_effect = [not_found_error, None]
         self.conn.list_buckets.return_value = deepcopy(list_ret)
         self.conn.create_bucket.return_value = bucket_ret
-        for key, value in config_ret.iteritems():
+        for key, value in six.iteritems(config_ret):
             getattr(self.conn, key).return_value = deepcopy(value)
         with patch.dict(funcs, {'boto_iam.get_account_id': MagicMock(return_value='111111222222')}):
             result = salt_states['boto_s3_bucket.present'](
@@ -320,7 +323,7 @@ class BotoS3BucketTestCase(BotoS3BucketStateTestCaseBase, BotoS3BucketTestCaseMi
 
     def test_present_when_bucket_exists_no_mods(self):
         self.conn.list_buckets.return_value = deepcopy(list_ret)
-        for key, value in config_ret.iteritems():
+        for key, value in six.iteritems(config_ret):
             getattr(self.conn, key).return_value = deepcopy(value)
         with patch.dict(funcs, {'boto_iam.get_account_id': MagicMock(return_value='111111222222')}):
             result = salt_states['boto_s3_bucket.present'](
@@ -334,7 +337,7 @@ class BotoS3BucketTestCase(BotoS3BucketStateTestCaseBase, BotoS3BucketTestCaseMi
 
     def test_present_when_bucket_exists_all_mods(self):
         self.conn.list_buckets.return_value = deepcopy(list_ret)
-        for key, value in config_ret.iteritems():
+        for key, value in six.iteritems(config_ret):
             getattr(self.conn, key).return_value = deepcopy(value)
         with patch.dict(funcs, {'boto_iam.get_account_id': MagicMock(return_value='111111222222')}):
             result = salt_states['boto_s3_bucket.present'](
@@ -357,7 +360,7 @@ class BotoS3BucketTestCase(BotoS3BucketStateTestCaseBase, BotoS3BucketTestCaseMi
                          **config_in
                      )
         self.assertFalse(result['result'])
-        self.assertTrue('An error occurred' in result['comment'])
+        self.assertTrue('Failed to create bucket' in result['comment'])
 
     def test_absent_when_bucket_does_not_exist(self):
         '''
@@ -377,4 +380,4 @@ class BotoS3BucketTestCase(BotoS3BucketStateTestCaseBase, BotoS3BucketTestCaseMi
         self.conn.delete_bucket.side_effect = ClientError(error_content, 'delete_bucket')
         result = salt_states['boto_s3_bucket.absent']('test', 'testbucket')
         self.assertFalse(result['result'])
-        self.assertTrue('An error occurred' in result['comment'])
+        self.assertTrue('Failed to delete bucket' in result['comment'])

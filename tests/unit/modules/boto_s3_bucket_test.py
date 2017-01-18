@@ -4,24 +4,29 @@
 from __future__ import absolute_import
 from distutils.version import LooseVersion  # pylint: disable=import-error,no-name-in-module
 from copy import deepcopy
+import random
+import string
 
 # Import Salt Testing libs
 from salttesting.unit import skipIf, TestCase
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, patch
+from salttesting.mock import (
+    MagicMock,
+    NO_MOCK,
+    NO_MOCK_REASON,
+    patch
+)
 from salttesting.helpers import ensure_in_syspath
 
 ensure_in_syspath('../../')
 
 # Import Salt libs
-import salt.config
+import salt.ext.six as six
 import salt.loader
 from salt.modules import boto_s3_bucket
+from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 
 # Import 3rd-party libs
 import logging
-
-# Import Mock libraries
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, MagicMock, patch
 
 # pylint: disable=import-error,no-name-in-module,unused-import
 try:
@@ -200,12 +205,22 @@ if _has_required_boto():
     }
 
 
+@skipIf(HAS_BOTO is False, 'The boto module must be installed.')
+@skipIf(_has_required_boto() is False, 'The boto3 module must be greater than'
+                                       ' or equal to version {0}'
+        .format(required_boto3_version))
+@skipIf(NO_MOCK, NO_MOCK_REASON)
 class BotoS3BucketTestCaseBase(TestCase):
     conn = None
 
     # Set up MagicMock to replace the boto3 session
     def setUp(self):
+        boto_s3_bucket.__context__ = {}
         context.clear()
+        # connections keep getting cached from prior tests, can't find the
+        # correct context object to clear it. So randomize the cache key, to prevent any
+        # cache hits
+        conn_parameters['key'] = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(50))
 
         self.patcher = patch('boto3.session.Session')
         self.addCleanup(self.patcher.stop)
@@ -220,11 +235,6 @@ class BotoS3BucketTestCaseMixin(object):
     pass
 
 
-@skipIf(HAS_BOTO is False, 'The boto module must be installed.')
-@skipIf(_has_required_boto() is False, 'The boto3 module must be greater than'
-                                       ' or equal to version {0}'
-        .format(required_boto3_version))
-@skipIf(NO_MOCK, NO_MOCK_REASON)
 class BotoS3BucketTestCase(BotoS3BucketTestCaseBase, BotoS3BucketTestCaseMixin):
     '''
     TestCase for salt.modules.boto_s3_bucket module
@@ -300,7 +310,7 @@ class BotoS3BucketTestCase(BotoS3BucketTestCaseBase, BotoS3BucketTestCaseMixin):
         '''
         Tests describing parameters if bucket exists
         '''
-        for key, value in config_ret.iteritems():
+        for key, value in six.iteritems(config_ret):
             getattr(self.conn, key).return_value = deepcopy(value)
 
         result = boto_s3_bucket.describe(Bucket='mybucket', **conn_parameters)

@@ -25,7 +25,13 @@ filemod.__salt__ = {
     'cmd.run': cmdmod.run,
     'cmd.run_all': cmdmod.run_all
 }
-filemod.__opts__ = {'test': False}
+filemod.__opts__ = {
+    'test': False,
+    'file_roots': {'base': 'tmp'},
+    'pillar_roots': {'base': 'tmp'},
+    'cachedir': 'tmp',
+    'grains': {},
+}
 filemod.__grains__ = {'kernel': 'Linux'}
 
 SED_CONTENT = """test
@@ -34,6 +40,8 @@ content
 /var/lib/foo/app/test
 here
 """
+
+filemod.__pillar__ = {}
 
 
 class FileReplaceTestCase(TestCase):
@@ -250,7 +258,7 @@ class FileBlockReplaceTestCase(TestCase):
         )
         with salt.utils.fopen(self.tfile.name, 'r') as fp:
             self.assertNotIn('#-- START BLOCK 2'
-                             + "\n" + new_content + "\n"
+                             + "\n" + new_content
                              + '#-- END BLOCK 2', fp.read())
 
         filemod.blockreplace(self.tfile.name,
@@ -263,7 +271,7 @@ class FileBlockReplaceTestCase(TestCase):
         with salt.utils.fopen(self.tfile.name, 'r') as fp:
             self.assertIn('#-- START BLOCK 2'
                           + "\n" + new_content
-                          + "\n" + '#-- END BLOCK 2', fp.read())
+                          + '#-- END BLOCK 2', fp.read())
 
     def test_replace_append_newline_at_eof(self):
         '''
@@ -277,7 +285,7 @@ class FileBlockReplaceTestCase(TestCase):
                 'content': 'baz',
                 'append_if_not_found': True,
         }
-        block = '{marker_start}\n{content}\n{marker_end}\n'.format(**args)
+        block = '{marker_start}\n{content}{marker_end}\n'.format(**args)
         expected = base + '\n' + block
         # File ending with a newline
         with tempfile.NamedTemporaryFile(mode='w+') as tfile:
@@ -315,7 +323,7 @@ class FileBlockReplaceTestCase(TestCase):
         with salt.utils.fopen(self.tfile.name, 'r') as fp:
             self.assertNotIn(
                 '#-- START BLOCK 2' + "\n"
-                + new_content + "\n" + '#-- END BLOCK 2',
+                + new_content + '#-- END BLOCK 2',
                 fp.read())
 
         filemod.blockreplace(self.tfile.name,
@@ -329,7 +337,7 @@ class FileBlockReplaceTestCase(TestCase):
                 fp.read().startswith(
                     '#-- START BLOCK 2'
                     + "\n" + new_content
-                    + "\n" + '#-- END BLOCK 2'))
+                    + '#-- END BLOCK 2'))
 
     def test_replace_partial_marked_lines(self):
         filemod.blockreplace(self.tfile.name,
@@ -476,10 +484,14 @@ class FileModuleTestCase(TestCase):
         '''
         # With file name
         with tempfile.NamedTemporaryFile(mode='w+') as tfile:
-            tfile.write('rc.conf ef6e82e4006dee563d98ada2a2a80a27\n')
             tfile.write(
-                'ead48423703509d37c4a90e6a0d53e143b6fc268 example.tar.gz\n')
+                'rc.conf ef6e82e4006dee563d98ada2a2a80a27\n'
+                'ead48423703509d37c4a90e6a0d53e143b6fc268 example.tar.gz\n'
+                'fe05bcdcdc4928012781a5f1a2a77cbb5398e106 ./subdir/example.tar.gz\n'
+                'ad782ecdac770fc6eb9a62e44f90873fb97fb26b foo.tar.bz2\n'
+            )
             tfile.flush()
+
             result = filemod.extract_hash(tfile.name, '', '/rc.conf')
             self.assertEqual(result, {
                 'hsum': 'ef6e82e4006dee563d98ada2a2a80a27',
@@ -491,15 +503,83 @@ class FileModuleTestCase(TestCase):
                 'hsum': 'ead48423703509d37c4a90e6a0d53e143b6fc268',
                 'hash_type': 'sha1'
             })
-        # Solohash - no file name (Maven repo checksum file format)
+
+            # All the checksums in this test file are sha1 sums. We run this
+            # loop three times. The first pass tests auto-detection of hash
+            # type by length of the hash. The second tests matching a specific
+            # type. The third tests a failed attempt to match a specific type,
+            # since sha256 was requested but sha1 is what is in the file.
+            for hash_type in ('', 'sha1', 'sha256'):
+                # Test the source_hash_name argument. Even though there are
+                # matches in the source_hash file for both the file_name and
+                # source params, they should be ignored in favor of the
+                # source_hash_name.
+                file_name = '/example.tar.gz'
+                source = 'https://mydomain.tld/foo.tar.bz2?key1=val1&key2=val2'
+                source_hash_name = './subdir/example.tar.gz'
+                result = filemod.extract_hash(
+                    tfile.name,
+                    hash_type,
+                    file_name,
+                    source,
+                    source_hash_name)
+                expected = {
+                    'hsum': 'fe05bcdcdc4928012781a5f1a2a77cbb5398e106',
+                    'hash_type': 'sha1'
+                } if hash_type != 'sha256' else None
+                self.assertEqual(result, expected)
+
+                # Test both a file_name and source but no source_hash_name.
+                # Even though there are matches for both file_name and
+                # source_hash_name, file_name should be preferred.
+                file_name = '/example.tar.gz'
+                source = 'https://mydomain.tld/foo.tar.bz2?key1=val1&key2=val2'
+                source_hash_name = None
+                result = filemod.extract_hash(
+                    tfile.name,
+                    hash_type,
+                    file_name,
+                    source,
+                    source_hash_name)
+                expected = {
+                    'hsum': 'ead48423703509d37c4a90e6a0d53e143b6fc268',
+                    'hash_type': 'sha1'
+                } if hash_type != 'sha256' else None
+                self.assertEqual(result, expected)
+
+                # Test both a file_name and source but no source_hash_name.
+                # Since there is no match for the file_name, the source is
+                # matched.
+                file_name = '/somefile.tar.gz'
+                source = 'https://mydomain.tld/foo.tar.bz2?key1=val1&key2=val2'
+                source_hash_name = None
+                result = filemod.extract_hash(
+                    tfile.name,
+                    hash_type,
+                    file_name,
+                    source,
+                    source_hash_name)
+                expected = {
+                    'hsum': 'ad782ecdac770fc6eb9a62e44f90873fb97fb26b',
+                    'hash_type': 'sha1'
+                } if hash_type != 'sha256' else None
+                self.assertEqual(result, expected)
+
+        # Hash only, no file name (Maven repo checksum format)
+        # Since there is no name match, the first checksum in the file will
+        # always be returned, never the second.
         with tempfile.NamedTemporaryFile(mode='w+') as tfile:
-            tfile.write('ead48423703509d37c4a90e6a0d53e143b6fc268\n')
+            tfile.write('ead48423703509d37c4a90e6a0d53e143b6fc268\n'
+                        'ad782ecdac770fc6eb9a62e44f90873fb97fb26b\n')
             tfile.flush()
-            result = filemod.extract_hash(tfile.name, '', '/testfile')
-            self.assertEqual(result, {
-                'hsum': 'ead48423703509d37c4a90e6a0d53e143b6fc268',
-                'hash_type': 'sha1'
-            })
+
+            for hash_type in ('', 'sha1', 'sha256'):
+                result = filemod.extract_hash(tfile.name, hash_type, '/testfile')
+                expected = {
+                    'hsum': 'ead48423703509d37c4a90e6a0d53e143b6fc268',
+                    'hash_type': 'sha1'
+                } if hash_type != 'sha256' else None
+                self.assertEqual(result, expected)
 
     def test_user_to_uid_int(self):
         '''
@@ -549,6 +629,72 @@ class FileModuleTestCase(TestCase):
             '-i', '/path/to/patch', '-d', '/path/to/dir', '--strip=0']
         cmd_mock.assert_called_once_with(cmd, python_shell=False)
         self.assertEqual('test_retval', ret)
+
+    def test_apply_template_on_contents(self):
+        '''
+        Tests that the templating engine works on string contents
+        '''
+        contents = 'This is a {{ template }}.'
+        defaults = {'template': 'templated file'}
+        ret = filemod.apply_template_on_contents(
+            contents,
+            template='jinja',
+            context={'opts': filemod.__opts__},
+            defaults=defaults,
+            saltenv='base')
+        self.assertEqual(ret, 'This is a templated file.')
+
+    def test_replace_line_in_empty_file(self):
+        '''
+        Tests that when calling file.line with ``mode=replace``,
+        the function doesn't stack trace if the file is empty.
+        Should return ``False``.
+
+        See Issue #31135.
+        '''
+        # Create an empty temporary named file
+        empty_file = tempfile.NamedTemporaryFile(delete=False,
+                                                 mode='w+')
+
+        # Assert that the file was created and is empty
+        self.assertEqual(os.stat(empty_file.name).st_size, 0)
+
+        # Now call the function on the empty file and assert
+        # the return is False instead of stack-tracing
+        self.assertFalse(filemod.line(empty_file.name,
+                                      content='foo',
+                                      match='bar',
+                                      mode='replace'))
+
+        # Close and remove the file
+        empty_file.close()
+        os.remove(empty_file.name)
+
+    def test_delete_line_in_empty_file(self):
+        '''
+        Tests that when calling file.line with ``mode=delete``,
+        the function doesn't stack trace if the file is empty.
+        Should return ``False``.
+
+        See Issue #38438.
+        '''
+        # Create an empty temporary named file
+        empty_file = tempfile.NamedTemporaryFile(delete=False,
+                                                 mode='w+')
+
+        # Assert that the file was created and is empty
+        self.assertEqual(os.stat(empty_file.name).st_size, 0)
+
+        # Now call the function on the empty file and assert
+        # the return is False instead of stack-tracing
+        self.assertFalse(filemod.line(empty_file.name,
+                                      content='foo',
+                                      match='bar',
+                                      mode='delete'))
+
+        # Close and remove the file
+        empty_file.close()
+        os.remove(empty_file.name)
 
 
 if __name__ == '__main__':

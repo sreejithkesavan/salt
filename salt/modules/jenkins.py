@@ -2,6 +2,8 @@
 '''
 Module for controlling Jenkins
 
+:depends: python-jenkins
+
 .. versionadded:: 2016.3.0
 
 :configuration: This module can be used by either passing an api key and version
@@ -71,15 +73,29 @@ def _connect():
     if not jenkins_url:
         raise SaltInvocationError('No Jenkins URL found.')
 
-    if not jenkins_user:
-        raise SaltInvocationError('No Jenkins User found.')
-
-    if not jenkins_password:
-        raise SaltInvocationError('No Jenkins Password or API token found.')
-
     return jenkins.Jenkins(jenkins_url,
                            username=jenkins_user,
                            password=jenkins_password)
+
+
+def run(script):
+    '''
+    .. versionadded:: Carbon
+
+    Execute a groovy script on the jenkins master
+
+    :param script: The groovy script
+
+    CLI Example:
+
+    .. code-block::
+
+        salt '*' jenkins.run 'Jenkins.instance.doSafeRestart()'
+
+    '''
+
+    server = _connect()
+    return server.run_script(script)
 
 
 def get_version():
@@ -430,7 +446,7 @@ def get_job_config(name=None):
 
 def plugin_installed(name):
     '''
-    .. versionadded:: Carbon
+    .. versionadded:: 2016.11.0
 
     Return if the plugin is installed for the provided plugin name.
 

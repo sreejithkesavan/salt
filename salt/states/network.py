@@ -234,6 +234,20 @@ all interfaces are ignored unless specified.
 
     .. versionadded:: 2015.5.0
 
+    system:
+      network.system:
+        - hostname: server2.example.com
+        - apply_hostname: True
+        - retain_settings: True
+
+    .. note::
+        Use `retain_settings` to retain current network settings that are not
+        otherwise specified in the state. Particularly useful if only setting
+        the hostname. Default behavior is to delete unspecified network
+        settings.
+
+    .. versionadded:: 2016.11.0
+
 .. note::
 
     When managing bridged interfaces on a Debian or Ubuntu based system, the
@@ -395,7 +409,7 @@ def managed(name, type, enabled=True, **kwargs):
             for iface in interfaces:
                 if 'secondary' in interfaces[iface]:
                     for second in interfaces[iface]['secondary']:
-                        if second.get('label', '') == 'name':
+                        if second.get('label', '') == name:
                             interface_status = True
         if enabled:
             if 'noifupdown' not in kwargs:
@@ -533,6 +547,10 @@ def system(name, **kwargs):
             apply_net_settings = True
             ret['changes']['network_settings'] = '\n'.join(diff)
     except AttributeError as error:
+        ret['result'] = False
+        ret['comment'] = str(error)
+        return ret
+    except KeyError as error:
         ret['result'] = False
         ret['comment'] = str(error)
         return ret

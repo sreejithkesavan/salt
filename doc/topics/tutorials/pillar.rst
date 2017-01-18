@@ -1,3 +1,5 @@
+.. _pillar-walk-through:
+
 ==================
 Pillar Walkthrough
 ==================
@@ -5,7 +7,7 @@ Pillar Walkthrough
 .. note::
 
     This walkthrough assumes that the reader has already completed the initial
-    Salt :doc:`walkthrough </topics/tutorials/walkthrough>`.
+    Salt :ref:`walkthrough <tutorial-salt-walk-through>`.
 
 Pillars are tree-like structures of data defined on the Salt Master and passed
 through to minions. They allow confidential, targeted data to be securely sent
@@ -297,18 +299,13 @@ Ensuring that the right vimrc is sent out to the correct minions.
 Setting Pillar Data on the Command Line
 =======================================
 
-Pillar data can be set on the command line like so:
+Pillar data can be set on the command line when running :py:func:`state.apply
+<salt.modules.state.apply_` like so:
 
 .. code-block:: bash
 
-    salt '*' state.highstate pillar='{"foo": "bar"}'
-
-The ``state.sls`` command can also be used to set pillar values via the command
-line:
-
-.. code-block:: bash
-
-    salt '*' state.sls my_sls_file pillar='{"hello": "world"}'
+    salt '*' state.apply pillar='{"foo": "bar"}'
+    salt '*' state.apply my_sls_file pillar='{"hello": "world"}'
 
 Nested pillar values can also be set via the command line:
 
@@ -327,13 +324,16 @@ specified list, notice the nested pillar dict:
 
 .. code-block:: bash
 
-    salt '*' state.sls edit.vim pillar='{"pkgs": {"vim": "telnet"}}'
+    salt '*' state.apply edit.vim pillar='{"pkgs": {"vim": "telnet"}}'
+
+This will attempt to install telnet on your minions, feel free to
+uninstall the package or replace telnet value with anything else.
 
 .. note::
-
-    This will attempt to install telnet on your minions, feel free to
-    uninstall the package or replace telnet value with anything else.
-
+   Be aware that when sending sensitive data via pillar on the command-line
+   that the publication containing that data will be received by all minions
+   and will not be restricted to the targeted minions. This may represent
+   a security concern in some cases.
 
 More On Pillar
 ==============
@@ -346,7 +346,7 @@ information about an infrastructure is stored in a separate location.
 Reference information on pillar and the external pillar interface can be found
 in the Salt documentation:
 
-:doc:`Pillar </topics/pillar/index>`
+:ref:`Pillar <pillar>`
 
 Minion Config in Pillar
 =======================

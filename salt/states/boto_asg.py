@@ -11,7 +11,7 @@ services, and so may incur charges.
 This module uses boto, which can be installed via package, or pip.
 
 This module accepts explicit autoscale credentials but can also utilize
-IAM roles assigned to the instance trough Instance Profiles. Dynamic
+IAM roles assigned to the instance through Instance Profiles. Dynamic
 credentials are then automatically obtained from AWS API and no further
 configuration is necessary. More Information available at:
 
@@ -55,7 +55,6 @@ as a passed in dict, or as a string to pull from pillars or minion config:
             - AddToLoadBalancer
             - AlarmNotification
         - scaling_policies
-            ----------
             - adjustment_type: ChangeInCapacity
             - as_name: api-production-iad
             - cooldown: 1800
@@ -201,10 +200,9 @@ import copy
 
 # Import Salt libs
 import salt.utils.dictupdate as dictupdate
-
-# Import 3rd-party libs
 import salt.ext.six as six
 from salt.ext.six.moves import zip  # pylint: disable=import-error,redefined-builtin
+from salt.exceptions import SaltInvocationError
 
 log = logging.getLogger(__name__)
 
@@ -230,8 +228,10 @@ def present(
         health_check_period=None,
         placement_group=None,
         vpc_zone_identifier=None,
+        subnet_names=None,
         tags=None,
         termination_policies=None,
+        termination_policies_from_pillar='boto_asg_termination_policies',
         suspended_processes=None,
         scaling_policies=None,
         scaling_policies_from_pillar='boto_asg_scaling_policies',
@@ -255,7 +255,7 @@ def present(
 
     launch_config_name
         Name of the launch config to use for the group.  Or, if
-        launch_config is specified, this will be the launch config
+        ``launch_config`` is specified, this will be the launch config
         name's prefix.  (see below)
 
     launch_config
@@ -263,8 +263,26 @@ def present(
         launch config will be used or created, matching this set
         of attributes, and the autoscale group will be set to use
         that launch config.  The launch config name will be the
-        launch_config_name followed by a hyphen followed by a hash
-        of the launch_config dict contents.
+        ``launch_config_name`` followed by a hyphen followed by a hash
+        of the ``launch_config`` dict contents.
+        Example:
+
+        .. code-block:: yaml
+
+            my_asg:
+              boto_asg.present:
+              - launch_config:
+                - ebs_optimized: false
+                - instance_profile_name: my_iam_profile
+                - kernel_id: ''
+                - ramdisk_id: ''
+                - key_name: my_ssh_key
+                - image_name: aws2015091-hvm
+                - instance_type: c3.xlarge
+                - instance_monitoring: false
+                - security_groups:
+                  - my_sec_group_01
+                  - my_sec_group_02
 
     availability_zones
         List of availability zones for the group.
@@ -301,17 +319,33 @@ def present(
     vpc_zone_identifier
         A list of the subnet identifiers of the Virtual Private Cloud.
 
+    subnet_names
+        For VPC, a list of subnet names (NOT subnet IDs) to deploy into.
+        Exclusive with vpc_zone_identifier.
+
     tags
         A list of tags. Example:
+
+        .. code-block:: yaml
+
             - key: 'key'
               value: 'value'
               propagate_at_launch: true
 
     termination_policies
-        A list of termination policies. Valid values are: “OldestInstance”,
-        “NewestInstance”, “OldestLaunchConfiguration”,
-        “ClosestToNextInstanceHour”, “Default”. If no value is specified, the
-        “Default” value is used.
+        A list of termination policies. Valid values are:
+
+        * ``OldestInstance``
+        * ``NewestInstance``
+        * ``OldestLaunchConfiguration``
+        * ``ClosestToNextInstanceHour``
+        * ``Default``
+
+        If no value is specified, the ``Default`` value is used.
+
+    termination_policies_from_pillar:
+        name of pillar dict that contains termination policy settings.   Termination policies
+        defined for this specific state will override those from pillar.
 
     suspended_processes
         List of processes to be suspended. see
@@ -319,7 +353,7 @@ def present(
 
     scaling_policies
         List of scaling policies.  Each policy is a dict of key-values described by
-        http://boto.readthedocs.org/en/latest/ref/autoscale.html#boto.ec2.autoscale.policy.ScalingPolicy
+        https://boto.readthedocs.io/en/latest/ref/autoscale.html#boto.ec2.autoscale.policy.ScalingPolicy
 
     scaling_policies_from_pillar:
         name of pillar dict that contains scaling policy settings.   Scaling policies defined for
@@ -351,8 +385,11 @@ def present(
         a dictionary of name->boto_cloudwatch_alarm sections to be associated with this ASG.
         All attributes should be specified except for dimension which will be
         automatically set to this ASG.
-        See the boto_cloudwatch_alarm state for information about these attributes.
-        if any alarm actions include  ":self:" this will be replaced with the asg name.
+
+        See the :mod:`salt.states.boto_cloudwatch_alarm` state for information
+        about these attributes.
+
+        If any alarm actions include  ":self:" this will be replaced with the asg name.
         For example, alarm_actions reading "['scaling_policy:self:ScaleUp']" will
         map to the arn for this asg's scaling policy named "ScaleUp".
         In addition, any alarms that have only scaling_policy as actions will be ignored if
@@ -376,26 +413,46 @@ def present(
         that contains a dict with region, key and keyid.
 
     notification_arn
-        The aws arn that notifications will be sent to
+        The AWS arn that notifications will be sent to
 
     notification_arn_from_pillar
-        name of the pillar dict that contains notification_arn settings.  A notification_arn
-        defined for this specific state will override the one from pillar.
+        name of the pillar dict that contains ``notifcation_arn`` settings.  A
+        ``notification_arn`` defined for this specific state will override the
+        one from pillar.
 
     notification_types
         A list of event names that will trigger a notification.  The list of valid
         notification types is:
-            - "autoscaling:EC2_INSTANCE_LAUNCH"
-            - "autoscaling:EC2_INSTANCE_LAUNCH_ERROR"
-            - "autoscaling:EC2_INSTANCE_TERMINATE"
-            - "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"
-            - "autoscaling:TEST_NOTIFICATION"
+
+        * ``autoscaling:EC2_INSTANCE_LAUNCH``
+        * ``autoscaling:EC2_INSTANCE_LAUNCH_ERROR``
+        * ``autoscaling:EC2_INSTANCE_TERMINATE``
+        * ``autoscaling:EC2_INSTANCE_TERMINATE_ERROR``
+        * ``autoscaling:TEST_NOTIFICATION``
 
     notification_types_from_pillar
-        name of the pillar dict that contains notifcation_types settings.  Notification_types
-        defined for this specific state will override those from the pillar.
+        name of the pillar dict that contains ``notifcation_types`` settings.
+        ``notification_types`` defined for this specific state will override those
+        from the pillar.
     '''
+    if vpc_zone_identifier and subnet_names:
+        raise SaltInvocationError('vpc_zone_identifier and subnet_names are '
+                                  'mutually exclusive options.')
     ret = {'name': name, 'result': True, 'comment': '', 'changes': {}}
+    if subnet_names:
+        vpc_zone_identifier = []
+        for i in subnet_names:
+            r = __salt__['boto_vpc.get_resource_id']('subnet', name=i, region=region,
+                                                     key=key, keyid=keyid, profile=profile)
+            if 'error' in r:
+                ret['comment'] = 'Error looking up subnet ids: {0}'.format(r['error'])
+                ret['result'] = False
+                return ret
+            if 'id' not in r:
+                ret['comment'] = 'Subnet {0} does not exist.'.format(i)
+                ret['result'] = False
+                return ret
+            vpc_zone_identifier.append(r['id'])
     if vpc_zone_identifier:
         vpc_id = __salt__['boto_vpc.get_subnet_association'](
             vpc_zone_identifier,
@@ -424,6 +481,19 @@ def present(
             'profile': profile
         }
 
+        for index, item in enumerate(launch_config):
+            if 'image_name' in item:
+                image_name = item['image_name']
+                iargs = {'ami_name': image_name, 'region': region, 'key': key,
+                         'keyid': keyid, 'profile': profile}
+                image_ids = __salt__['boto_ec2.find_images'](**iargs)
+                if len(image_ids):
+                    launch_config[index]['image_id'] = image_ids[0]
+                else:
+                    launch_config[index]['image_id'] = image_name
+                del launch_config[index]['image_name']
+                break
+
         if vpc_id:
             log.debug('Auto Scaling Group {0} is a associated with a vpc')
             # locate the security groups attribute of a launch config
@@ -434,7 +504,7 @@ def present(
                     break
             # if security groups exist within launch_config then convert
             # to group ids
-            if sg_index:
+            if sg_index is not None:
                 log.debug('security group associations found in launch config')
                 _group_ids = __salt__['boto_secgroup.convert_to_group_ids'](
                     launch_config[sg_index]['security_groups'], vpc_id=vpc_id,
@@ -452,6 +522,10 @@ def present(
                 ret['changes']['launch_config'] = lc_ret['changes']
 
     asg = __salt__['boto_asg.get_config'](name, region, key, keyid, profile)
+    termination_policies = _determine_termination_policies(
+        termination_policies,
+        termination_policies_from_pillar
+    )
     scaling_policies = _determine_scaling_policies(
         scaling_policies,
         scaling_policies_from_pillar
@@ -506,7 +580,7 @@ def present(
                 if 'min_adjustment_step' not in policy:
                     policy['min_adjustment_step'] = None
         if scheduled_actions:
-            for s_name, action in scheduled_actions.iteritems():
+            for s_name, action in six.iteritems(scheduled_actions):
                 if 'end_time' not in action:
                     action['end_time'] = None
         config = {
@@ -525,6 +599,9 @@ def present(
             'scaling_policies': scaling_policies,
             'scheduled_actions': scheduled_actions
         }
+        #ensure that we reset termination_policies to default if none are specified
+        if not termination_policies:
+            config['termination_policies'] = ['Default']
         if suspended_processes is None:
             config['suspended_processes'] = []
         # ensure that we delete scaling_policies if none are specified
@@ -534,7 +611,7 @@ def present(
         if scheduled_actions is None:
             config['scheduled_actions'] = {}
         # allow defaults on start_time
-        for s_name, action in scheduled_actions.iteritems():
+        for s_name, action in six.iteritems(scheduled_actions):
             if 'start_time' not in action:
                 asg_action = asg['scheduled_actions'].get(s_name, {})
                 if 'start_time' in asg_action:
@@ -626,6 +703,18 @@ def present(
     if not _ret['result']:
         ret['result'] = _ret['result']
     return ret
+
+
+def _determine_termination_policies(termination_policies, termination_policies_from_pillar):
+    '''
+    helper method for present.  ensure that termination_policies are set
+    '''
+    pillar_termination_policies = copy.deepcopy(
+        __salt__['config.option'](termination_policies_from_pillar, [])
+    )
+    if not termination_policies and len(pillar_termination_policies) > 0:
+        termination_policies = pillar_termination_policies
+    return termination_policies
 
 
 def _determine_scaling_policies(scaling_policies, scaling_policies_from_pillar):

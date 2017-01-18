@@ -20,12 +20,14 @@ import jinja2.ext
 
 # Import salt libs
 import salt.utils
+import salt.utils.files
 import salt.utils.yamlencoding
 import salt.utils.locales
 from salt.exceptions import (
     SaltRenderError, CommandExecutionError, SaltInvocationError
 )
 import salt.utils.jinja
+import salt.utils.network
 from salt.utils.odict import OrderedDict
 from salt import __path__ as saltpath
 from salt.ext.six import string_types
@@ -39,18 +41,6 @@ TEMPLATE_DIRNAME = os.path.join(saltpath[0], 'templates')
 # FIXME: also in salt/template.py
 SLS_ENCODING = 'utf-8'  # this one has no BOM.
 SLS_ENCODER = codecs.getencoder(SLS_ENCODING)
-
-ALIAS_WARN = (
-        'Starting in 2015.5, cmd.run uses python_shell=False by default, '
-        'which doesn\'t support shellisms (pipes, env variables, etc). '
-        'cmd.run is currently aliased to cmd.shell to prevent breakage. '
-        'Please switch to cmd.shell or set python_shell=True to avoid '
-        'breakage in the future, when this aliasing is removed.'
-)
-ALIASES = {
-        'cmd.run': 'cmd.shell',
-        'cmd': {'run': 'shell'},
-}
 
 
 class AliasedLoader(object):
@@ -69,18 +59,10 @@ class AliasedLoader(object):
         self.wrapped = wrapped
 
     def __getitem__(self, name):
-        if name in ALIASES:
-            salt.utils.warn_until('Nitrogen', ALIAS_WARN)
-            return self.wrapped[ALIASES[name]]
-        else:
-            return self.wrapped[name]
+        return self.wrapped[name]
 
     def __getattr__(self, name):
-        if name in ALIASES:
-            salt.utils.warn_until('Nitrogen', ALIAS_WARN)
-            return AliasedModule(getattr(self.wrapped, name), ALIASES[name])
-        else:
-            return getattr(self.wrapped, name)
+        return getattr(self.wrapped, name)
 
 
 class AliasedModule(object):
@@ -96,11 +78,7 @@ class AliasedModule(object):
         self.wrapped = wrapped
 
     def __getattr__(self, name):
-        if name in self.aliases:
-            salt.utils.warn_until('Nitrogen', ALIAS_WARN)
-            return getattr(self.wrapped, self.aliases[name])
-        else:
-            return getattr(self.wrapped, name)
+        return getattr(self.wrapped, name)
 
 
 def wrap_tmpl_func(render_str):
@@ -189,7 +167,7 @@ def wrap_tmpl_func(render_str):
         else:
             if to_str:  # then render as string
                 return dict(result=True, data=output)
-            with tempfile.NamedTemporaryFile('wb', delete=False) as outf:
+            with tempfile.NamedTemporaryFile('wb', delete=False, prefix=salt.utils.files.TEMPFILE_PREFIX) as outf:
                 outf.write(SLS_ENCODER(output)[0])
                 # Note: If nothing is replaced or added by the rendering
                 #       function, then the contents of the output file will
@@ -278,8 +256,10 @@ def _get_jinja_error(trace, context=None):
     if add_log:
         if template_path:
             out = '\n{0}\n'.format(msg.splitlines()[0])
+            with salt.utils.fopen(template_path) as fp_:
+                template_contents = fp_.read()
             out += salt.utils.get_context(
-                salt.utils.fopen(template_path).read(),
+                template_contents,
                 line,
                 marker='    <======================')
         else:
@@ -346,6 +326,15 @@ def render_jinja_tmpl(tmplstr, context, tmplpath=None):
     jinja_env.filters['yaml_dquote'] = salt.utils.yamlencoding.yaml_dquote
     jinja_env.filters['yaml_squote'] = salt.utils.yamlencoding.yaml_squote
     jinja_env.filters['yaml_encode'] = salt.utils.yamlencoding.yaml_encode
+    jinja_env.filters['is_ip'] = salt.utils.network.is_ip_filter  # check if valid IP address
+    jinja_env.filters['is_ipv4'] = salt.utils.network.is_ipv4_filter  # check if valid IPv4 address
+    jinja_env.filters['is_ipv6'] = salt.utils.network.is_ipv6_filter  # check if valid IPv6 address
+    jinja_env.filters['ipaddr'] = salt.utils.network.ipaddr  # filter IP addresses
+    jinja_env.filters['ipv4'] = salt.utils.network.ipv4  # filter IPv4-only addresses
+    jinja_env.filters['ipv6'] = salt.utils.network.ipv6  # filter IPv6-only addresses
+    jinja_env.filters['ip_host'] = salt.utils.network.ip_host  # return the network interface IP
+    jinja_env.filters['network_hosts'] = salt.utils.network.network_hosts  # return the hosts within a network
+    jinja_env.filters['network_size'] = salt.utils.network.network_size  # return the network size
 
     jinja_env.globals['odict'] = OrderedDict
     jinja_env.globals['show_full_context'] = salt.utils.jinja.show_full_context
@@ -524,7 +513,7 @@ def py(sfn, string=False, **kwargs):  # pylint: disable=C0103
         if string:
             return {'result': True,
                     'data': data}
-        tgt = salt.utils.mkstemp()
+        tgt = salt.utils.files.mkstemp()
         with salt.utils.fopen(tgt, 'w+') as target:
             target.write(data)
         return {'result': True,

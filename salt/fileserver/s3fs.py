@@ -69,7 +69,6 @@ import logging
 import salt.fileserver as fs
 import salt.modules
 import salt.utils
-import salt.utils.s3 as s3
 
 # Import 3rd-party libs
 # pylint: disable=import-error,no-name-in-module,redefined-builtin
@@ -128,7 +127,7 @@ def find_file(path, saltenv='base', **kwargs):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -170,7 +169,7 @@ def file_hash(load, fnd):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -203,7 +202,7 @@ def serve_file(load, fnd):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -245,7 +244,7 @@ def file_list(load):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -286,7 +285,7 @@ def dir_list(load):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -328,8 +327,14 @@ def _get_s3_key():
     location = __opts__['s3.location'] \
         if 's3.location' in __opts__ \
         else None
+    path_style = __opts__['s3.path_style'] \
+        if 's3.path_style' in __opts__ \
+        else None
+    https_enable = __opts__['s3.https_enable'] \
+        if 's3.https_enable' in __opts__ \
+        else None
 
-    return key, keyid, service_url, verify_ssl, kms_keyid, location
+    return key, keyid, service_url, verify_ssl, kms_keyid, location, path_style, https_enable
 
 
 def _init():
@@ -399,12 +404,12 @@ def _refresh_buckets_cache_file(cache_file):
 
     log.debug('Refreshing buckets cache file')
 
-    key, keyid, service_url, verify_ssl, kms_keyid, location = _get_s3_key()
+    key, keyid, service_url, verify_ssl, kms_keyid, location, path_style, https_enable = _get_s3_key()
     metadata = {}
 
     # helper s3 query function
     def __get_s3_meta(bucket, key=key, keyid=keyid):
-        return s3.query(
+        return __utils__['s3.query'](
                 key=key,
                 keyid=keyid,
                 kms_keyid=keyid,
@@ -412,7 +417,9 @@ def _refresh_buckets_cache_file(cache_file):
                 service_url=service_url,
                 verify_ssl=verify_ssl,
                 location=location,
-                return_bin=False)
+                return_bin=False,
+                path_style=path_style,
+                https_enable=https_enable)
 
     if _is_env_per_bucket():
         # Single environment per bucket
@@ -610,7 +617,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
     Checks the local cache for the file, if it's old or missing go grab the
     file from S3 and update the cache
     '''
-    key, keyid, service_url, verify_ssl, kms_keyid, location = _get_s3_key()
+    key, keyid, service_url, verify_ssl, kms_keyid, location, path_style, https_enable = _get_s3_key()
 
     # check the local cache...
     if os.path.isfile(cached_file_path):
@@ -638,7 +645,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                     log.debug('cached file size equal to metadata size and '
                               'cached file mtime later than metadata last '
                               'modification time.')
-                    ret = s3.query(
+                    ret = __utils__['s3.query'](
                         key=key,
                         keyid=keyid,
                         kms_keyid=keyid,
@@ -649,7 +656,9 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                         location=location,
                         path=_quote(path),
                         local_file=cached_file_path,
-                        full_headers=True
+                        full_headers=True,
+                        path_style=path_style,
+                        https_enable=https_enable
                     )
                     if ret is not None:
                         for header_name, header_value in ret['headers'].items():
@@ -669,7 +678,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                             return
 
     # ... or get the file from S3
-    s3.query(
+    __utils__['s3.query'](
         key=key,
         keyid=keyid,
         kms_keyid=keyid,
@@ -678,7 +687,9 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
         verify_ssl=verify_ssl,
         location=location,
         path=_quote(path),
-        local_file=cached_file_path
+        local_file=cached_file_path,
+        path_style=path_style,
+        https_enable=https_enable,
     )
 
 

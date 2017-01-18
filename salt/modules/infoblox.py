@@ -97,7 +97,7 @@ def delete_record(name,
         the infoblox user's password (can also use the infolblox:password pillar)
 
     infoblox_api_version
-        the infoblox api verison to use
+        the infoblox api version to use
 
     sslVerify
         should ssl verification be done on the connection to the Infoblox REST API
@@ -115,6 +115,7 @@ def delete_record(name,
         _throw_no_creds()
         return None
 
+    record_type = record_type.lower()
     currentRecords = get_record(name,
                                 record_type,
                                 infoblox_server,
@@ -174,7 +175,7 @@ def update_record(name,
         the infoblox user's password (can also use the infolblox:password pillar)
 
     infoblox_api_version
-        the infoblox api verison to use
+        the infoblox api version to use
 
     sslVerify
         should ssl verification be done on the connection to the Infoblox REST API
@@ -193,6 +194,7 @@ def update_record(name,
         _throw_no_creds()
         return None
 
+    record_type = record_type.lower()
     currentRecords = get_record(name,
                                 record_type,
                                 infoblox_server,
@@ -268,7 +270,7 @@ def add_record(name,
         the infoblox user's password (can also use the infolblox:password pillar)
 
     infoblox_api_version
-        the infoblox api verison to use
+        the infoblox api version to use
 
     sslVerify
         should ssl verification be done on the connection to the Infoblox REST API
@@ -351,7 +353,7 @@ def get_network(network_name,
         the infoblox user's password (can also use the infolblox:password pillar)
 
     infoblox_api_version
-        the infoblox api verison to use
+        the infoblox api version to use
 
     sslVerify
         should ssl verification be done on the connection to the Infoblox REST API
@@ -424,7 +426,7 @@ def get_record(record_name,
         the infoblox DNS view to search, if not specified all views are searched
 
     infoblox_api_version
-        the infoblox api verison to use
+        the infoblox api version to use
 
     sslVerify
         should ssl verification be done on the connection to the Infoblox REST API
@@ -443,6 +445,7 @@ def get_record(record_name,
                                                                          infoblox_user,
                                                                          infoblox_password)
 
+    record_type = record_type.lower()
     if infoblox_server is None and infoblox_user is None and infoblox_password is None:
         _throw_no_creds()
         return None

@@ -171,6 +171,7 @@ import types
 from salt.modules import cmdmod
 from salt.exceptions import CommandExecutionError, SaltInvocationError
 import salt.utils
+import salt.utils.files
 import salt.utils.odict
 
 # Import 3rd-party libs
@@ -569,7 +570,7 @@ def create_container(image,
                      detach=True,
                      stdin_open=False,
                      tty=False,
-                     mem_limit=0,
+                     mem_limit=None,
                      ports=None,
                      environment=None,
                      dns=None,
@@ -616,7 +617,7 @@ def create_container(image,
 
         This dictionary is suitable for feeding directly into the Docker API, and all
         keys are required.
-        (see http://docker-py.readthedocs.org/en/latest/volumes/)
+        (see https://docker-py.readthedocs.io/en/latest/volumes/)
     tty
         attach ttys, Default is ``False``
     stdin_open
@@ -2175,11 +2176,11 @@ def _script(status,
                 'Oxygen',
                 'Parameter \'env\' has been detected in the argument list.  This '
                 'parameter is no longer used and has been replaced by \'saltenv\' '
-                'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+                'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
                 )
             kwargs.pop('env')
 
-        path = salt.utils.mkstemp(dir=tpath)
+        path = salt.utils.files.mkstemp(dir=tpath)
         if template:
             __salt__['cp.get_template'](
                 source, path, template, saltenv, **kwargs)

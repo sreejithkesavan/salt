@@ -5,7 +5,7 @@ manager.
 
 .. code-block:: bash
 
-    salt '*' certutil.install salt://cert.cer "TrustedPublisher"
+    salt '*' certutil.add_store salt://cert.cer "TrustedPublisher"
 '''
 
 # Import Python Libs
@@ -36,6 +36,11 @@ def get_cert_serial(cert_file):
     cert_file
         The certificate file to find the serial for
 
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' certutil.get_cert_serial <certificate name>
     '''
     cmd = "certutil.exe -verify {0}".format(cert_file)
     out = __salt__['cmd.run'](cmd)
@@ -53,6 +58,11 @@ def get_stored_cert_serials(store):
     store
         The store to get all the certificate serials from
 
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' certutil.get_stored_cert_serials <store>
     '''
     cmd = "certutil.exe -store {0}".format(store)
     out = __salt__['cmd.run'](cmd)
@@ -65,7 +75,7 @@ def add_store(source, store, saltenv='base'):
     Add the given cert into the given Certificate Store
 
     source
-        The source certficate file this can be in the form
+        The source certificate file this can be in the form
         salt://path/to/file
 
     store
@@ -91,7 +101,7 @@ def del_store(source, store, saltenv='base'):
     Delete the given cert into the given Certificate Store
 
     source
-        The source certficate file this can be in the form
+        The source certificate file this can be in the form
         salt://path/to/file
 
     store

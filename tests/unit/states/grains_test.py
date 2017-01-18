@@ -78,6 +78,27 @@ class GrainsTestCase(TestCase):
         with open(grains_file, "w+") as grf:
             grf.write(cstr)
 
+    # 'exists' function tests: 2
+
+    def test_exists_missing(self):
+        self.setGrains({'a': 'aval'})
+        ret = grains.exists(
+            name='foo',
+        )
+        self.assertEqual(ret['result'], False)
+        self.assertEqual(ret['comment'], 'Grain does not exist')
+        self.assertEqual(ret['changes'], {})
+
+    def test_exists_found(self):
+        self.setGrains({'a': 'aval', 'foo': 'bar'})
+        # Grain already set
+        ret = grains.exists(
+            name='foo',
+        )
+        self.assertEqual(ret['result'], True)
+        self.assertEqual(ret['comment'], 'Grain exists')
+        self.assertEqual(ret['changes'], {})
+
     # 'present' function tests: 12
 
     def test_present_add(self):
@@ -916,6 +937,23 @@ class GrainsTestCase(TestCase):
                                   + "foo: bar\n"
         )
 
+    def test_list_present_nested_already(self):
+        self.setGrains({'a': 'aval', 'b': {'foo': ['bar']}})
+        ret = grains.list_present(
+            name='b:foo',
+            value='bar')
+        self.assertEqual(ret['result'], True)
+        self.assertEqual(ret['comment'], 'Value bar is already in grain b:foo')
+        self.assertEqual(ret['changes'], {})
+        self.assertEqual(
+            grains.__grains__,
+            {'a': 'aval', 'b': {'foo': ['bar']}})
+        self.assertGrainFileContent("a: aval\n"
+                                  + "b:\n"
+                                  + "  foo:\n"
+                                  + "  - bar\n"
+        )
+
     def test_list_present_already(self):
         self.setGrains({'a': 'aval', 'foo': ['bar']})
         ret = grains.list_present(
@@ -959,7 +997,7 @@ class GrainsTestCase(TestCase):
             value='bar')
         self.assertEqual(ret['result'], True)
         self.assertEqual(ret['comment'], 'Value bar was deleted from grain foo')
-        self.assertEqual(ret['changes'], {'deleted': 'bar'})
+        self.assertEqual(ret['changes'], {'deleted': ['bar']})
         self.assertEqual(
             grains.__grains__,
             {'a': 'aval', 'foo': []})
@@ -974,7 +1012,7 @@ class GrainsTestCase(TestCase):
             value='bar')
         self.assertEqual(ret['result'], True)
         self.assertEqual(ret['comment'], 'Value bar was deleted from grain foo:list')
-        self.assertEqual(ret['changes'], {'deleted': 'bar'})
+        self.assertEqual(ret['changes'], {'deleted': ['bar']})
         self.assertEqual(
             grains.__grains__,
             {'a': 'aval', 'foo': {'list': []}})

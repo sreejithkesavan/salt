@@ -2,8 +2,13 @@
 '''
 Support for APT (Advanced Packaging Tool)
 
-.. note::
+.. important::
+    If you feel that Salt should be using this module to manage packages on a
+    minion, and it is using a different module (or gives an error similar to
+    *'pkg.install' is not available*), see :ref:`here
+    <module-provider-override>`.
 
+.. note::
     For virtual package support, either the ``python-apt`` or ``dctrl-tools``
     package must be installed.
 
@@ -16,6 +21,7 @@ import copy
 import os
 import re
 import logging
+import time
 import json
 
 # Import third party libs
@@ -28,8 +34,11 @@ from salt.ext.six.moves.urllib.request import Request as _Request, urlopen as _u
 # pylint: enable=no-name-in-module,import-error,redefined-builtin
 
 # Import salt libs
+import salt.config
+import salt.syspaths
 from salt.modules.cmdmod import _parse_env
 import salt.utils
+import salt.utils.systemd
 from salt.exceptions import (
     CommandExecutionError, MinionError, SaltInvocationError
 )
@@ -58,6 +67,8 @@ except ImportError:
     HAS_SOFTWAREPROPERTIES = False
 # pylint: enable=import-error
 
+APT_LISTS_PATH = "/var/lib/apt/lists"
+
 # Source format for urllib fallback on PPA handling
 LP_SRC_FORMAT = 'deb http://ppa.launchpad.net/{0}/{1}/ubuntu {2} main'
 LP_PVT_SRC_FORMAT = 'deb https://{0}private-ppa.launchpad.net/{1}/{2}/ubuntu' \
@@ -80,9 +91,9 @@ def __virtual__():
     '''
     Confirm this module is on a Debian based system
     '''
-    if __grains__.get('os_family', False) == 'Kali':
+    if __grains__.get('os_family') in ('Kali', 'Debian', 'neon'):
         return __virtualname__
-    elif __grains__.get('os_family', False) == 'Debian':
+    elif __grains__.get('os_family', False) == 'Cumulus':
         return __virtualname__
     return (False, 'The pkg module could not be loaded: unsupported OS family')
 
@@ -168,7 +179,12 @@ def _get_virtual():
     except KeyError:
         __context__['pkg._get_virtual'] = {}
         if HAS_APT:
-            apt_cache = apt.cache.Cache()
+            try:
+                apt_cache = apt.cache.Cache()
+            except SystemError as syserr:
+                msg = 'Failed to get virtual package information ({0})'.format(syserr)
+                log.error(msg)
+                raise CommandExecutionError(msg)
             pkgs = getattr(apt_cache._cache, 'packages', [])
             for pkg in pkgs:
                 for item in getattr(pkg, 'provides_list', []):
@@ -209,6 +225,13 @@ def latest_version(*names, **kwargs):
 
     A specific repo can be requested using the ``fromrepo`` keyword argument.
 
+    cache_valid_time
+
+        .. versionadded:: 2016.11.0
+
+        Skip refreshing the package database if refresh has already occurred within
+        <value> seconds
+
     CLI Example:
 
     .. code-block:: bash
@@ -231,6 +254,7 @@ def latest_version(*names, **kwargs):
     fromrepo = _get_repo(**kwargs)
     kwargs.pop('fromrepo', None)
     kwargs.pop('repo', None)
+    cache_valid_time = kwargs.pop('cache_valid_time', 0)
 
     if len(names) == 0:
         return ''
@@ -244,9 +268,12 @@ def latest_version(*names, **kwargs):
 
     # Refresh before looking for the latest version available
     if refresh:
-        refresh_db()
+        refresh_db(cache_valid_time)
 
-    virtpkgs = _get_virtual()
+    try:
+        virtpkgs = _get_virtual()
+    except CommandExecutionError as cee:
+        raise CommandExecutionError(cee)
     all_virt = set()
     for provides in six.itervalues(virtpkgs):
         all_virt.update(provides)
@@ -257,7 +284,8 @@ def latest_version(*names, **kwargs):
             cmd.extend(repo)
         out = __salt__['cmd.run_all'](cmd,
                                       output_loglevel='trace',
-                                      python_shell=False)
+                                      python_shell=False,
+                                      env={'LC_ALL': 'C', 'LANG': 'C'})
         candidate = ''
         for line in out['stdout'].splitlines():
             if 'Candidate' in line:
@@ -317,7 +345,7 @@ def version(*names, **kwargs):
     return __salt__['pkg_resource.version'](*names, **kwargs)
 
 
-def refresh_db():
+def refresh_db(cache_valid_time=0, failhard=False):
     '''
     Updates the APT database to latest packages based upon repositories
 
@@ -328,13 +356,42 @@ def refresh_db():
     - ``False``: Problem updating database
     - ``None``: Database already up-to-date
 
+    cache_valid_time
+
+        .. versionadded:: 2016.11.0
+
+        Skip refreshing the package database if refresh has already occurred within
+        <value> seconds
+
+    failhard
+
+        If False, return results of Err lines as ``False`` for the package database that
+        encountered the error.
+        If True, raise an error with a list of the package databases that encountered
+        errors.
+
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' pkg.refresh_db
     '''
+    failhard = salt.utils.is_true(failhard)
     ret = {}
+    error_repos = list()
+
+    if cache_valid_time:
+        try:
+            latest_update = os.stat(APT_LISTS_PATH).st_mtime
+            now = time.time()
+            log.debug("now: %s, last update time: %s, expire after: %s seconds", now, latest_update, cache_valid_time)
+            if latest_update + cache_valid_time > now:
+                return ret
+        except TypeError as exp:
+            log.warning("expected integer for cache_valid_time parameter, failed with: %s", exp)
+        except IOError as exp:
+            log.warning("could not stat cache directory due to: %s", exp)
+
     cmd = ['apt-get', '-q', 'update']
     call = __salt__['cmd.run_all'](cmd,
                                    output_loglevel='trace',
@@ -359,10 +416,17 @@ def refresh_db():
             # Strip filesize from end of line
             ident = re.sub(r' \[.+B\]$', '', ident)
             ret[ident] = True
-        elif cols[0] == 'Ign':
+        elif 'Ign' in cols[0]:
             ret[ident] = False
-        elif cols[0] == 'Hit':
+        elif 'Hit' in cols[0]:
             ret[ident] = None
+        elif 'Err' in cols[0]:
+            ret[ident] = False
+            error_repos.append(ident)
+
+    if failhard and error_repos:
+        raise CommandExecutionError('Error getting repos: {0}'.format(', '.join(error_repos)))
+
     return ret
 
 
@@ -376,6 +440,20 @@ def install(name=None,
             reinstall=False,
             **kwargs):
     '''
+    .. versionchanged:: 2015.8.12,2016.3.3,2016.11.0
+        On minions running systemd>=205, `systemd-run(1)`_ is now used to
+        isolate commands which modify installed packages from the
+        ``salt-minion`` daemon's control group. This is done to keep systemd
+        from killing any apt-get/dpkg commands spawned by Salt when the
+        ``salt-minion`` service is restarted. (see ``KillMode`` in the
+        `systemd.kill(5)`_ manpage for more information). If desired, usage of
+        `systemd-run(1)`_ can be suppressed by setting a :mod:`config option
+        <salt.modules.config.get>` called ``systemd.scope``, with a value of
+        ``False`` (no quotes).
+
+    .. _`systemd-run(1)`: https://www.freedesktop.org/software/systemd/man/systemd-run.html
+    .. _`systemd.kill(5)`: https://www.freedesktop.org/software/systemd/man/systemd.kill.html
+
     Install the passed package, add refresh=True to update the dpkg database.
 
     name
@@ -397,6 +475,13 @@ def install(name=None,
 
     refresh
         Whether or not to refresh the package database before installing.
+
+    cache_valid_time
+
+        .. versionadded:: 2016.11.0
+
+        Skip refreshing the package database if refresh has already occurred within
+        <value> seconds
 
     fromrepo
         Specify a package repository to install from
@@ -532,11 +617,14 @@ def install(name=None,
     if pkg_params is None or len(pkg_params) == 0:
         return {}
 
+    use_scope = salt.utils.systemd.has_scope(__context__) \
+        and __salt__['config.get']('systemd.scope', True)
+    cmd_prefix = ['systemd-run', '--scope'] if use_scope else []
+
     old = list_pkgs()
     targets = []
     downgrade = []
     to_reinstall = {}
-    cmd_prefix = []
     if pkg_type == 'repository':
         pkg_params_items = six.iteritems(pkg_params)
         # Build command prefix
@@ -544,12 +632,15 @@ def install(name=None,
         if kwargs.get('force_yes', False):
             cmd_prefix.append('--force-yes')
         if 'force_conf_new' in kwargs and kwargs['force_conf_new']:
-            cmd_prefix += ['-o', 'DPkg::Options::=--force-confnew']
+            cmd_prefix.extend(['-o', 'DPkg::Options::=--force-confnew'])
         else:
-            cmd_prefix += ['-o', 'DPkg::Options::=--force-confold']
+            cmd_prefix.extend(['-o', 'DPkg::Options::=--force-confold'])
         cmd_prefix += ['-o', 'DPkg::Options::=--force-confdef']
-        if 'install_recommends' in kwargs and not kwargs['install_recommends']:
-            cmd_prefix.append('--no-install-recommends')
+        if 'install_recommends' in kwargs:
+            if not kwargs['install_recommends']:
+                cmd_prefix.append('--no-install-recommends')
+            else:
+                cmd_prefix.append('--install-recommends')
         if 'only_upgrade' in kwargs and kwargs['only_upgrade']:
             cmd_prefix.append('--only-upgrade')
         if skip_verify:
@@ -664,8 +755,9 @@ def install(name=None,
     if not cmds:
         return {}
 
+    cache_valid_time = kwargs.pop('cache_valid_time', 0)
     if _refresh_db:
-        refresh_db()
+        refresh_db(cache_valid_time)
 
     env = _parse_env(kwargs.get('env'))
     env.update(DPKG_ENV_VARS.copy())
@@ -726,7 +818,11 @@ def _uninstall(action='remove', name=None, pkgs=None, **kwargs):
         targets.extend([x for x in pkg_params if x in old_removed])
     if not targets:
         return {}
-    cmd = ['apt-get', '-q', '-y', action]
+    cmd = []
+    if salt.utils.systemd.has_scope(__context__) \
+            and __salt__['config.get']('systemd.scope', True):
+        cmd.extend(['systemd-run', '--scope'])
+    cmd.extend(['apt-get', '-q', '-y', action])
     cmd.extend(targets)
     env = _parse_env(kwargs.get('env'))
     env.update(DPKG_ENV_VARS.copy())
@@ -787,9 +883,13 @@ def autoremove(list_only=False, purge=False):
         salt '*' pkg.autoremove list_only=True
         salt '*' pkg.autoremove purge=True
     '''
+    cmd = []
+    if salt.utils.systemd.has_scope(__context__) \
+            and __salt__['config.get']('systemd.scope', True):
+        cmd.extend(['systemd-run', '--scope'])
     if list_only:
         ret = []
-        cmd = ['apt-get', '--assume-no']
+        cmd.extend(['apt-get', '--assume-no'])
         if purge:
             cmd.append('--purge')
         cmd.append('autoremove')
@@ -807,7 +907,7 @@ def autoremove(list_only=False, purge=False):
         return ret
     else:
         old = list_pkgs()
-        cmd = ['apt-get', '--assume-yes']
+        cmd.extend(['apt-get', '--assume-yes'])
         if purge:
             cmd.append('--purge')
         cmd.append('autoremove')
@@ -819,6 +919,20 @@ def autoremove(list_only=False, purge=False):
 
 def remove(name=None, pkgs=None, **kwargs):
     '''
+    .. versionchanged:: 2015.8.12,2016.3.3,2016.11.0
+        On minions running systemd>=205, `systemd-run(1)`_ is now used to
+        isolate commands which modify installed packages from the
+        ``salt-minion`` daemon's control group. This is done to keep systemd
+        from killing any apt-get/dpkg commands spawned by Salt when the
+        ``salt-minion`` service is restarted. (see ``KillMode`` in the
+        `systemd.kill(5)`_ manpage for more information). If desired, usage of
+        `systemd-run(1)`_ can be suppressed by setting a :mod:`config option
+        <salt.modules.config.get>` called ``systemd.scope``, with a value of
+        ``False`` (no quotes).
+
+    .. _`systemd-run(1)`: https://www.freedesktop.org/software/systemd/man/systemd-run.html
+    .. _`systemd.kill(5)`: https://www.freedesktop.org/software/systemd/man/systemd.kill.html
+
     Remove packages using ``apt-get remove``.
 
     name
@@ -849,6 +963,20 @@ def remove(name=None, pkgs=None, **kwargs):
 
 def purge(name=None, pkgs=None, **kwargs):
     '''
+    .. versionchanged:: 2015.8.12,2016.3.3,2016.11.0
+        On minions running systemd>=205, `systemd-run(1)`_ is now used to
+        isolate commands which modify installed packages from the
+        ``salt-minion`` daemon's control group. This is done to keep systemd
+        from killing any apt-get/dpkg commands spawned by Salt when the
+        ``salt-minion`` service is restarted. (see ``KillMode`` in the
+        `systemd.kill(5)`_ manpage for more information). If desired, usage of
+        `systemd-run(1)`_ can be suppressed by setting a :mod:`config option
+        <salt.modules.config.get>` called ``systemd.scope``, with a value of
+        ``False`` (no quotes).
+
+    .. _`systemd-run(1)`: https://www.freedesktop.org/software/systemd/man/systemd-run.html
+    .. _`systemd.kill(5)`: https://www.freedesktop.org/software/systemd/man/systemd.kill.html
+
     Remove packages via ``apt-get purge`` along with all configuration files.
 
     name
@@ -879,10 +1007,26 @@ def purge(name=None, pkgs=None, **kwargs):
 
 def upgrade(refresh=True, dist_upgrade=False, **kwargs):
     '''
+    .. versionchanged:: 2015.8.12,2016.3.3,2016.11.0
+        On minions running systemd>=205, `systemd-run(1)`_ is now used to
+        isolate commands which modify installed packages from the
+        ``salt-minion`` daemon's control group. This is done to keep systemd
+        from killing any apt-get/dpkg commands spawned by Salt when the
+        ``salt-minion`` service is restarted. (see ``KillMode`` in the
+        `systemd.kill(5)`_ manpage for more information). If desired, usage of
+        `systemd-run(1)`_ can be suppressed by setting a :mod:`config option
+        <salt.modules.config.get>` called ``systemd.scope``, with a value of
+        ``False`` (no quotes).
+
+    .. _`systemd-run(1)`: https://www.freedesktop.org/software/systemd/man/systemd-run.html
+    .. _`systemd.kill(5)`: https://www.freedesktop.org/software/systemd/man/systemd.kill.html
+
     Upgrades all packages via ``apt-get upgrade`` or ``apt-get dist-upgrade``
     if  ``dist_upgrade`` is ``True``.
 
-    Returns a dict containing the changes::
+    Returns a dictionary containing the changes:
+
+    .. code-block:: python
 
         {'<package>':  {'old': '<old-version>',
                         'new': '<new-version>'}}
@@ -892,6 +1036,13 @@ def upgrade(refresh=True, dist_upgrade=False, **kwargs):
         is to use upgrade.
 
         .. versionadded:: 2014.7.0
+
+    cache_valid_time
+
+        .. versionadded:: 2016.11.0
+
+        Skip refreshing the package database if refresh has already occurred within
+        <value> seconds
 
     force_conf_new
         Always install the new version of any configuration files.
@@ -904,38 +1055,44 @@ def upgrade(refresh=True, dist_upgrade=False, **kwargs):
 
         salt '*' pkg.upgrade
     '''
-    ret = {'changes': {},
-           'result': True,
-           'comment': '',
-           }
-
+    cache_valid_time = kwargs.pop('cache_valid_time', 0)
     if salt.utils.is_true(refresh):
-        refresh_db()
+        refresh_db(cache_valid_time)
 
     old = list_pkgs()
     if 'force_conf_new' in kwargs and kwargs['force_conf_new']:
         force_conf = '--force-confnew'
     else:
         force_conf = '--force-confold'
-    if dist_upgrade:
-        cmd = ['apt-get', '-q', '-y', '-o', 'DPkg::Options::={0}'.format(force_conf),
-               '-o', 'DPkg::Options::=--force-confdef', 'dist-upgrade']
-    else:
-        cmd = ['apt-get', '-q', '-y', '-o', 'DPkg::Options::={0}'.format(force_conf),
-               '-o', 'DPkg::Options::=--force-confdef', 'upgrade']
-    call = __salt__['cmd.run_all'](cmd,
-                                   output_loglevel='trace',
-                                   python_shell=False,
-                                   redirect_stderr=True,
-                                   env=DPKG_ENV_VARS.copy())
-    if call['retcode'] != 0:
-        ret['result'] = False
-        if call['stdout']:
-            ret['comment'] = call['stdout']
+    cmd = []
+    if salt.utils.systemd.has_scope(__context__) \
+            and __salt__['config.get']('systemd.scope', True):
+        cmd.extend(['systemd-run', '--scope'])
 
+    cmd.extend(['apt-get', '-q', '-y',
+                '-o', 'DPkg::Options::={0}'.format(force_conf),
+                '-o', 'DPkg::Options::=--force-confdef'])
+
+    if kwargs.get('force_yes', False):
+        cmd.append('--force-yes')
+    if kwargs.get('skip_verify', False):
+        cmd.append('--allow-unauthenticated')
+
+    cmd.append('dist-upgrade' if dist_upgrade else 'upgrade')
+
+    result = __salt__['cmd.run_all'](cmd,
+                                     output_loglevel='trace',
+                                     python_shell=False,
+                                     env=DPKG_ENV_VARS.copy())
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret['changes'] = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.compare_dicts(old, new)
+
+    if result['retcode'] != 0:
+        raise CommandExecutionError(
+            'Problem encountered upgrading packages',
+            info={'changes': ret, 'result': result}
+        )
 
     return ret
 
@@ -1192,7 +1349,10 @@ def list_pkgs(versions_as_list=False,
 
     # Check for virtual packages. We need dctrl-tools for this.
     if not removed:
-        virtpkgs_all = _get_virtual()
+        try:
+            virtpkgs_all = _get_virtual()
+        except CommandExecutionError as cee:
+            raise CommandExecutionError(cee)
         virtpkgs = set()
         for realpkg, provides in six.iteritems(virtpkgs_all):
             # grep-available returns info on all virtual packages. Ignore any
@@ -1220,7 +1380,7 @@ def list_pkgs(versions_as_list=False,
     return ret
 
 
-def _get_upgradable(dist_upgrade=True):
+def _get_upgradable(dist_upgrade=True, **kwargs):
     '''
     Utility function to get upgradable packages
 
@@ -1233,17 +1393,21 @@ def _get_upgradable(dist_upgrade=True):
         cmd.append('dist-upgrade')
     else:
         cmd.append('upgrade')
-    call = __salt__['cmd.run_all'](cmd, output_loglevel='trace', python_shell=False)
+    fromrepo = _get_repo(**kwargs)
+    if fromrepo:
+        cmd.extend(['-o', 'APT::Default-Release={0}'.format(fromrepo)])
+
+    call = __salt__['cmd.run_all'](cmd,
+                                   python_shell=False,
+                                   output_loglevel='trace')
 
     if call['retcode'] != 0:
-        comment = ''
-        if 'stderr' in call:
-            comment += call['stderr']
-        if 'stdout' in call:
-            comment += call['stdout']
-        raise CommandExecutionError(
-            '{0}'.format(comment)
-        )
+        msg = 'Failed to get upgrades'
+        for key in ('stderr', 'stdout'):
+            if call[key]:
+                msg += ': ' + call[key]
+                break
+        raise CommandExecutionError(msg)
     else:
         out = call['stdout']
 
@@ -1266,13 +1430,20 @@ def _get_upgradable(dist_upgrade=True):
     return ret
 
 
-def list_upgrades(refresh=True, dist_upgrade=True):
+def list_upgrades(refresh=True, dist_upgrade=True, **kwargs):
     '''
     List all available package upgrades.
 
     refresh
         Whether to refresh the package database before listing upgrades.
         Default: True.
+
+    cache_valid_time
+
+        .. versionadded:: 2016.11.0
+
+        Skip refreshing the package database if refresh has already occurred within
+        <value> seconds
 
     dist_upgrade
         Whether to list the upgrades using dist-upgrade vs upgrade.  Default is
@@ -1284,9 +1455,10 @@ def list_upgrades(refresh=True, dist_upgrade=True):
 
         salt '*' pkg.list_upgrades
     '''
+    cache_valid_time = kwargs.pop('cache_valid_time', 0)
     if salt.utils.is_true(refresh):
-        refresh_db()
-    return _get_upgradable(dist_upgrade)
+        refresh_db(cache_valid_time)
+    return _get_upgradable(dist_upgrade, **kwargs)
 
 
 def upgrade_available(name):
@@ -1302,11 +1474,16 @@ def upgrade_available(name):
     return latest_version(name) != ''
 
 
-def version_cmp(pkg1, pkg2):
+def version_cmp(pkg1, pkg2, ignore_epoch=False):
     '''
     Do a cmp-style comparison on two packages. Return -1 if pkg1 < pkg2, 0 if
     pkg1 == pkg2, and 1 if pkg1 > pkg2. Return None if there was a problem
     making the comparison.
+
+    ignore_epoch : False
+        Set to ``True`` to ignore the epoch when comparing versions
+
+        .. versionadded:: 2015.8.10,2016.3.2
 
     CLI Example:
 
@@ -1314,6 +1491,13 @@ def version_cmp(pkg1, pkg2):
 
         salt '*' pkg.version_cmp '0.2.4-0ubuntu1' '0.2.4.1-0ubuntu1'
     '''
+    normalize = lambda x: str(x).split(':', 1)[-1] if ignore_epoch else str(x)
+    # both apt_pkg.version_compare and _cmd_quote need string arguments.
+    pkg1 = normalize(pkg1)
+    pkg2 = normalize(pkg2)
+
+    # if we have apt_pkg, this will be quickier this way
+    # and also do not rely on shell.
     if HAS_APTPKG:
         try:
             # the apt_pkg module needs to be manually initialized
@@ -1390,7 +1574,7 @@ def _consolidate_repo_sources(sources):
     for file_ in delete_files:
         try:
             os.remove(file_)
-        except Exception:
+        except OSError:
             pass
     return sources
 
@@ -1441,7 +1625,7 @@ def get_repo(repo, **kwargs):
     ppa_auth = kwargs.get('ppa_auth', None)
     # we have to be clever about this since the repo definition formats
     # are a bit more "loose" than in some other distributions
-    if repo.startswith('ppa:') and __grains__['os'] in ('Ubuntu', 'Mint'):
+    if repo.startswith('ppa:') and __grains__['os'] in ('Ubuntu', 'Mint', 'neon'):
         # This is a PPA definition meaning special handling is needed
         # to derive the name.
         dist = __grains__['lsb_distrib_codename']
@@ -1519,7 +1703,7 @@ def del_repo(repo, **kwargs):
     '''
     _check_apt()
     is_ppa = False
-    if repo.startswith('ppa:') and __grains__['os'] in ('Ubuntu', 'Mint'):
+    if repo.startswith('ppa:') and __grains__['os'] in ('Ubuntu', 'Mint', 'neon'):
         # This is a PPA definition meaning special handling is needed
         # to derive the name.
         is_ppa = True
@@ -1607,6 +1791,168 @@ def del_repo(repo, **kwargs):
     )
 
 
+def _convert_if_int(value):
+    '''
+    .. versionadded:: nitrogen
+
+    Convert to an int if necessary.
+
+    :param str value: The value to check/convert.
+
+    :return: The converted or passed value.
+    :rtype: bool|int|str
+    '''
+    try:
+        value = int(str(value))
+    except ValueError:
+        pass
+    return value
+
+
+def get_repo_keys():
+    '''
+    .. versionadded:: nitrogen
+
+    List known repo key details.
+
+    :return: A dictionary containing the repo keys.
+    :rtype: dict
+
+    CLI Examples:
+
+    .. code-block:: bash
+
+        salt '*' pkg.get_repo_keys
+    '''
+    ret = dict()
+    repo_keys = list()
+
+    # The double usage of '--with-fingerprint' is necessary in order to
+    # retrieve the fingerprint of the subkey.
+    cmd = ['apt-key', 'adv', '--list-public-keys', '--with-fingerprint',
+           '--with-fingerprint', '--with-colons', '--fixed-list-mode']
+
+    cmd_ret = __salt__['cmd.run_all'](cmd=cmd)
+
+    if cmd_ret['retcode'] != 0:
+        log.error(cmd_ret['stderr'])
+        return ret
+
+    lines = [line for line in cmd_ret['stdout'].splitlines() if line.strip()]
+
+    # Reference for the meaning of each item in the colon-separated
+    # record can be found here: https://goo.gl/KIZbvp
+    for line in lines:
+        items = [_convert_if_int(item.strip()) if item.strip() else None for item in line.split(':')]
+        key_props = dict()
+
+        if len(items) < 2:
+            log.debug('Skipping line: %s', line)
+            continue
+
+        if items[0] in ('pub', 'sub'):
+            key_props.update({
+                'algorithm': items[3],
+                'bits': items[2],
+                'capability': items[11],
+                'date_creation': items[5],
+                'date_expiration': items[6],
+                'keyid': items[4],
+                'validity': items[1]
+            })
+
+            if items[0] == 'pub':
+                repo_keys.append(key_props)
+            else:
+                repo_keys[-1]['subkey'] = key_props
+        elif items[0] == 'fpr':
+            if repo_keys[-1].get('subkey', False):
+                repo_keys[-1]['subkey'].update({'fingerprint': items[9]})
+            else:
+                repo_keys[-1].update({'fingerprint': items[9]})
+        elif items[0] == 'uid':
+            repo_keys[-1].update({
+                'uid': items[9],
+                'uid_hash': items[7]
+            })
+
+    for repo_key in repo_keys:
+        ret[repo_key['keyid']] = repo_key
+    return ret
+
+
+def add_repo_key(path=None, text=None, keyserver=None, keyid=None, saltenv='base'):
+    '''
+    .. versionadded:: nitrogen
+
+    Add a repo key using ``apt-key add``.
+
+    :param str path: The path of the key file to import.
+    :param str text: The key data to import, in string form.
+    :param str keyserver: The server to download the repo key specified by the keyid.
+    :param str keyid: The key id of the repo key to add.
+    :param str saltenv: The environment the key file resides in.
+
+    :return: A boolean representing whether the repo key was added.
+    :rtype: bool
+
+    CLI Examples:
+
+    .. code-block:: bash
+
+        salt '*' pkg.add_repo_key 'salt://apt/sources/test.key'
+
+        salt '*' pkg.add_repo_key text="'$KEY1'"
+
+        salt '*' pkg.add_repo_key keyserver='keyserver.example' keyid='0000AAAA'
+    '''
+    cmd = ['apt-key']
+    kwargs = {'python_shell': False}
+
+    current_repo_keys = get_repo_keys()
+
+    if path:
+        cached_source_path = __salt__['cp.cache_file'](path, saltenv)
+
+        if not cached_source_path:
+            log.error('Unable to get cached copy of file: %s', path)
+            return False
+
+        cmd.extend(['add', cached_source_path])
+    elif text:
+        log.debug('Received value: %s', text)
+
+        cmd.extend(['add', '-'])
+        kwargs.update({'stdin': text})
+    elif keyserver:
+        if not keyid:
+            error_msg = 'No keyid or keyid too short for keyserver: {0}'.format(keyserver)
+            raise SaltInvocationError(error_msg)
+
+        cmd.extend(['adv', '--keyserver', keyserver, '--recv', keyid])
+    elif keyid:
+        error_msg = 'No keyserver specified for keyid: {0}'.format(keyid)
+        raise SaltInvocationError(error_msg)
+    else:
+        raise TypeError('{0}() takes at least 1 argument (0 given)'.format(add_repo_key.__name__))
+
+    # If the keyid is provided or determined, check it against the existing
+    # repo key ids to determine whether it needs to be imported.
+    if keyid:
+        for current_keyid in current_repo_keys:
+            if current_keyid[-(len(keyid)):] == keyid:
+                log.debug("The keyid '%s' already present: %s", keyid, current_keyid)
+                return True
+
+    kwargs.update({'cmd': cmd})
+    cmd_ret = __salt__['cmd.run_all'](**kwargs)
+
+    if cmd_ret['retcode'] == 0:
+        return True
+    log.error('Unable to add repo key: %s', cmd_ret['stderr'])
+    return False
+
+
 def del_repo_key(name=None, **kwargs):
     '''
     .. versionadded:: 2015.8.0
@@ -1690,6 +2036,13 @@ def mod_repo(repo, saltenv='base', **kwargs):
         consolidate
             if ``True``, will attempt to de-dup and consolidate sources
 
+        comments
+            Sometimes you want to supply additional information, but not as
+            enabled configuration. Anything supplied for this list will be saved
+            in the repo configuration with a comment marker (#) in front.
+
+            .. versionadded:: 2015.8.9
+
         .. note:: Due to the way keys are stored for APT, there is a known issue
                 where the key won't be updated unless another change is made
                 at the same time.  Keys should be properly added on initial
@@ -1706,11 +2059,12 @@ def mod_repo(repo, saltenv='base', **kwargs):
     # to ensure no one sets some key values that _shouldn't_ be changed on the
     # object itself, this is just a white-list of "ok" to set properties
     if repo.startswith('ppa:'):
-        if __grains__['os'] in ('Ubuntu', 'Mint'):
+        if __grains__['os'] in ('Ubuntu', 'Mint', 'neon'):
             # secure PPAs cannot be supported as of the time of this code
             # implementation via apt-add-repository.  The code path for
             # secure PPAs should be the same as urllib method
-            if HAS_SOFTWAREPROPERTIES and 'ppa_auth' not in kwargs:
+            if salt.utils.which('apt-add-repository') \
+                    and 'ppa_auth' not in kwargs:
                 repo_info = get_repo(repo)
                 if repo_info:
                     return {repo: repo_info}
@@ -1848,8 +2202,13 @@ def mod_repo(repo, saltenv='base', **kwargs):
         imported = output.startswith('-----BEGIN PGP')
         if keyserver:
             if not imported:
-                cmd = ['apt-key', 'adv', '--keyserver', keyserver,
-                       '--logger-fd', '1', '--recv-keys', keyid]
+                http_proxy_url = _get_http_proxy_url()
+                if http_proxy_url:
+                    cmd = ['apt-key', 'adv', '--keyserver-options', 'http-proxy={0}'.format(http_proxy_url),
+                           '--keyserver', keyserver, '--logger-fd', '1', '--recv-keys', keyid]
+                else:
+                    cmd = ['apt-key', 'adv', '--keyserver', keyserver,
+                           '--logger-fd', '1', '--recv-keys', keyid]
                 ret = __salt__['cmd.run_all'](cmd,
                                               python_shell=False,
                                               **kwargs)
@@ -1883,11 +2242,7 @@ def mod_repo(repo, saltenv='base', **kwargs):
         kwargs['architectures'] = kwargs['architectures'].split(',')
 
     if 'disabled' in kwargs:
-        kw_disabled = kwargs['disabled']
-        if kw_disabled is True or str(kw_disabled).lower() == 'true':
-            kwargs['disabled'] = True
-        else:
-            kwargs['disabled'] = False
+        kwargs['disabled'] = salt.utils.is_true(kwargs['disabled'])
 
     kw_type = kwargs.get('type')
     kw_dist = kwargs.get('dist')
@@ -1895,13 +2250,12 @@ def mod_repo(repo, saltenv='base', **kwargs):
     for source in repos:
         # This series of checks will identify the starting source line
         # and the resulting source line.  The idea here is to ensure
-        # we are not retuning bogus data because the source line
+        # we are not returning bogus data because the source line
         # has already been modified on a previous run.
-        if ((source.type == repo_type and source.uri == repo_uri
-             and source.dist == repo_dist) or
-            (source.dist == kw_dist and source.type == kw_type
-             and source.type == kw_type)):
+        repo_matches = source.type == repo_type and source.uri == repo_uri and source.dist == repo_dist
+        kw_matches = source.dist == kw_dist and source.type == kw_type
 
+        if repo_matches or kw_matches:
             for comp in full_comp_list:
                 if comp in getattr(source, 'comps', []):
                     mod_source = source
@@ -1915,6 +2269,8 @@ def mod_repo(repo, saltenv='base', **kwargs):
         if 'comments' in kwargs:
             mod_source.comment = " ".join(str(c) for c in kwargs['comments'])
         sources.list.append(mod_source)
+    elif 'comments' in kwargs:
+        mod_source.comment = " ".join(str(c) for c in kwargs['comments'])
 
     for key in kwargs:
         if key in _MODIFY_OK and hasattr(mod_source, key):
@@ -1963,9 +2319,9 @@ def file_dict(*packages):
 
     .. code-block:: bash
 
-        salt '*' pkg.file_list httpd
-        salt '*' pkg.file_list httpd postfix
-        salt '*' pkg.file_list
+        salt '*' pkg.file_dict httpd
+        salt '*' pkg.file_dict httpd postfix
+        salt '*' pkg.file_dict
     '''
     return __salt__['lowpkg.file_dict'](*packages)
 
@@ -1982,23 +2338,27 @@ def _strip_uri(repo):
     return ' '.join(splits)
 
 
-def expand_repo_def(repokwargs):
+def expand_repo_def(**kwargs):
     '''
     Take a repository definition and expand it to the full pkg repository dict
     that can be used for comparison.  This is a helper function to make
     the Debian/Ubuntu apt sources sane for comparison in the pkgrepo states.
 
-    There is no use to calling this function via the CLI.
+    This is designed to be called from pkgrepo states and will have little use
+    being called on the CLI.
     '''
+    if 'repo' not in kwargs:
+        raise SaltInvocationError('missing \'repo\' argument')
+
     _check_apt()
 
     sanitized = {}
-    repo = _strip_uri(repokwargs['repo'])
-    if repo.startswith('ppa:') and __grains__['os'] in ('Ubuntu', 'Mint'):
+    repo = _strip_uri(kwargs['repo'])
+    if repo.startswith('ppa:') and __grains__['os'] in ('Ubuntu', 'Mint', 'neon'):
         dist = __grains__['lsb_distrib_codename']
         owner_name, ppa_name = repo[4:].split('/', 1)
-        if 'ppa_auth' in repokwargs:
-            auth_info = '{0}@'.format(repokwargs['ppa_auth'])
+        if 'ppa_auth' in kwargs:
+            auth_info = '{0}@'.format(kwargs['ppa_auth'])
             repo = LP_PVT_SRC_FORMAT.format(auth_info, owner_name, ppa_name,
                                             dist)
         else:
@@ -2010,15 +2370,14 @@ def expand_repo_def(repokwargs):
             else:
                 repo = LP_SRC_FORMAT.format(owner_name, ppa_name, dist)
 
-        if 'file' not in repokwargs:
+        if 'file' not in kwargs:
             filename = '/etc/apt/sources.list.d/{0}-{1}-{2}.list'
-            repokwargs['file'] = filename.format(owner_name, ppa_name,
-                                                 dist)
+            kwargs['file'] = filename.format(owner_name, ppa_name, dist)
 
     source_entry = sourceslist.SourceEntry(repo)
     for kwarg in _MODIFY_OK:
-        if kwarg in repokwargs:
-            setattr(source_entry, kwarg, repokwargs[kwarg])
+        if kwarg in kwargs:
+            setattr(source_entry, kwarg, kwargs[kwarg])
 
     sanitized['file'] = source_entry.file
     sanitized['comps'] = getattr(source_entry, 'comps', [])
@@ -2316,3 +2675,34 @@ def info_installed(*names):
         ret[pkg_name] = t_nfo
 
     return ret
+
+
+def _get_http_proxy_url():
+    '''
+    Returns the http_proxy_url if proxy_username, proxy_password, proxy_host, and proxy_port
+    config values are set.
+
+    Returns a string.
+    '''
+    http_proxy_url = ''
+    host = __salt__['config.option']('proxy_host')
+    port = __salt__['config.option']('proxy_port')
+    username = __salt__['config.option']('proxy_username')
+    password = __salt__['config.option']('proxy_password')
+
+    # Set http_proxy_url for use in various internet facing actions...eg apt-key adv
+    if host and port:
+        if username and password:
+            http_proxy_url = 'http://{0}:{1}@{2}:{3}'.format(
+                username,
+                password,
+                host,
+                port
+            )
+        else:
+            http_proxy_url = 'http://{0}:{1}'.format(
+                host,
+                port
+            )
+
+    return http_proxy_url

@@ -73,9 +73,9 @@ class XapiTestCase(TestCase):
     '''
         Test cases for salt.modules.xapi
     '''
-    def test_list_vms(self):
+    def test_list_domains(self):
         '''
-            Test to return a list of virtual machine names on the minion
+            Test to return a list of domain names on the minion
         '''
         with patch.object(xapi, "_get_xapi_session", MagicMock()):
             self.assertListEqual(xapi.list_domains(), [])
@@ -99,46 +99,6 @@ class XapiTestCase(TestCase):
                 self.assertDictEqual(xapi.vm_state("salt"), {'salt': '1'})
 
                 self.assertDictEqual(xapi.vm_state(), {})
-
-    def test_node_info(self):
-        '''
-            Test to return a dict with information about this node
-        '''
-        ret = {'cc_compile_by': 'stack',
-               'cc_compile_date': 'stack',
-               'cc_compile_domain': 'stack',
-               'cc_compiler': 'stack',
-               'cores_per_sockets': 'stack',
-               'cpuarch': 'stack',
-               'cpucores': 'stack',
-               'cpufeatures': 'salt',
-               'cpumhz': 5,
-               'cputhreads': 'stack',
-               'free_cpus': 0,
-               'free_memory': 0,
-               'phymemory': 0,
-               'platform_params': 'stack',
-               'xen_caps': 's t a c k',
-               'xen_changeset': 'stack',
-               'xen_commandline': 'stack',
-               'xen_extra': 'stack',
-               'xen_major': 'stack',
-               'xen_minor': 'stack',
-               'xen_pagesize': 'stack',
-               'xen_scheduler': 'stack',
-               'xend_config_format': 'stack'
-               }
-        with patch.object(xapi, "_get_xapi_session", MagicMock()):
-            mock = MagicMock(return_value={"features": "salt", "speed": 5,
-                                           "host_CPUs": "salt",
-                                           "cpu_pool": "salt"})
-            with patch.object(xapi, "_get_record", mock):
-                mock = MagicMock(return_value={"memory_free": 1024,
-                                               "memory_total": 1024})
-                with patch.object(xapi, "_get_metrics_record", mock):
-                    mock = MagicMock(return_value="stack")
-                    with patch.object(xapi, "_get_val", mock):
-                        self.assertDictEqual(xapi.node_info(), ret)
 
     def test_get_nics(self):
         '''
@@ -314,14 +274,6 @@ class XapiTestCase(TestCase):
                 with patch.object(xapi, "_get_label_uuid", mock):
                     self.assertFalse(xapi.resume("salt"))
 
-    def test_create(self):
-        '''
-            Test to start a defined domain
-        '''
-        mock = MagicMock(return_value=True)
-        with patch.dict(xapi.__salt__, {'cmd.run': mock}):
-            self.assertTrue(xapi.start("salt"))
-
     def test_start(self):
         '''
             Test to reboot a domain via ACPI request
@@ -385,7 +337,7 @@ class XapiTestCase(TestCase):
                 with patch.object(xapi, "_get_label_uuid", mock):
                     self.assertFalse(xapi.migrate("salt", "stack"))
 
-    def test_destroy(self):
+    def test_stop(self):
         '''
             Test to Hard power down the virtual machine,
             this is equivalent to pulling the power
