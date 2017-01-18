@@ -793,6 +793,9 @@ def wait_for_winexesvc(host, port, username, password, timeout=900):
                 log.debug('winexe connected...')
                 return True
             log.debug('Return code was {0}'.format(ret_code))
+            if time.time() - start > timeout:
+                log.error('winexe connection timed out: {0}'.format(timeout))
+                return False
             time.sleep(1)
         except socket.error as exc:
             log.debug('Caught exception in wait_for_winexesvc: {0}'.format(exc))
