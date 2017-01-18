@@ -186,16 +186,6 @@ These retries and timeouts relate to validating the Administrator password
 once AWS provides the credentials via the AWS API.
 
 
-Windows Deploy Timeouts
-=======================
-For Windows instances, it may take longer than normal for the instance to be
-ready.  In these circumstances, the provider configuration can be configured
-with a ``win_deploy_auth_retries`` and/or a ``win_deploy_auth_retry_delay``
-setting, which default to 10 retries and a one second delay between retries.
-These retries and timeouts relate to validating the Administrator password
-once AWS provides the credentials via the AWS API.
-
-
 Key Pairs
 =========
 In order to create an instance with Salt installed and configured, a key pair
@@ -283,6 +273,7 @@ Set up an initial profile at ``/etc/salt/cloud.profiles``:
         - { size: 10, device: /dev/sdf }
         - { size: 10, device: /dev/sdg, type: io1, iops: 1000 }
         - { size: 10, device: /dev/sdh, type: io1, iops: 1000 }
+        - { size: 10, device: /dev/sdi, tags: {"Environment": "production"} }
       # optionally add tags to profile:
       tag: {'Environment': 'production', 'Role': 'database'}
       # force grains to sync after install
@@ -424,6 +415,16 @@ Multiple security groups can also be specified in the same fashion:
         - default
         - extra
 
+EC2 instances can be added to an `AWS Placement Group`_ by specifying the
+``placementgroup`` option:
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      placementgroup: my-aws-placement-group
+
+.. _`AWS Placement Group`: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html
+
 Your instances may optionally make use of EC2 Spot Instances. The
 following example will request that spot instances be used and your
 maximum bid will be $0.10. Keep in mind that different spot prices
@@ -535,6 +536,31 @@ Tags can be set once an instance has been launched.
 .. _`AWS documentation`: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/InstanceStorage.html
 .. _`AWS Spot Instances`: http://aws.amazon.com/ec2/purchasing-options/spot-instances/
 
+Setting up a Master inside EC2
+------------------------------
+
+Salt Cloud can configure Salt Masters as well as Minions. Use the ``make_master`` setting to use
+this functionality.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      # Optionally install a Salt Master in addition to the Salt Minion
+      make_master: True
+
+When creating a Salt Master inside EC2 with ``make_master: True``, or when the Salt Master is already
+located and configured inside EC2, by default, minions connect to the master's public IP address during
+Salt Cloud's provisioning process. Depending on how your security groups are defined, the minions
+may or may not be able to communicate with the master. In order to use the master's private IP in EC2
+instead of the public IP, set the ``salt_interface`` to ``private_ips``.
+
+.. code-block:: yaml
+
+    my-ec2-config:
+      # Optionally set the IP configuration to private_ips
+      salt_interface: private_ips
+
+
 Modify EC2 Tags
 ===============
 One of the features of EC2 is the ability to tag resources. In fact, under the
@@ -572,7 +598,7 @@ Rename on Destroy
 =================
 When instances on EC2 are destroyed, there will be a lag between the time that
 the action is sent, and the time that Amazon cleans up the instance. During
-this time, the instance still retails a Name tag, which will cause a collision
+this time, the instance still retains a Name tag, which will cause a collision
 if the creation of an instance with the same name is attempted before the
 cleanup occurs. In order to avoid such collisions, Salt Cloud can be configured
 to rename instances when they are destroyed. The new name will look something

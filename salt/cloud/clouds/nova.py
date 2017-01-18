@@ -48,6 +48,25 @@ examples could be set up in the cloud configuration at
       driver: nova
       userdata_file: /tmp/userdata.txt
 
+To use keystoneauth1 instead of keystoneclient, include the `use_keystoneauth`
+option in the provider config.
+
+.. note:: this is required to use keystone v3 as for authentication.
+
+.. code-block:: yaml
+
+    my-openstack-config:
+      use_keystoneauth: True
+      identity_url: 'https://controller:5000/v3'
+      auth_version: 3
+      compute_name: nova
+      compute_region: RegionOne
+      service_type: compute
+      tenant: admin
+      user: admin
+      password: passwordgoeshere
+      driver: nova
+
 For local installations that only use private IP address ranges, the
 following option may be useful. Using the old syntax:
 
@@ -279,6 +298,7 @@ def get_conn():
     kwargs['project_id'] = vm_['tenant']
     kwargs['auth_url'] = vm_['identity_url']
     kwargs['region_name'] = vm_['compute_region']
+    kwargs['use_keystoneauth'] = vm_['use_keystoneauth']
 
     if 'password' in vm_:
         kwargs['password'] = vm_['password']
@@ -360,7 +380,7 @@ def show_instance(name, call=None):
 
     conn = get_conn()
     node = conn.show_instance(name).__dict__
-    salt.utils.cloud.cache_node(node, __active_provider_name__, __opts__)
+    __utils__['cloud.cache_node'](node, __active_provider_name__, __opts__)
     return node
 
 
@@ -487,11 +507,12 @@ def destroy(name, conn=None, call=None):
             '-a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -524,18 +545,19 @@ def destroy(name, conn=None, call=None):
     if ret:
         log.info('Destroyed VM: {0}'.format(name))
         # Fire destroy action
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'destroyed instance',
             'salt/cloud/{0}/destroyed'.format(name),
-            {'name': name},
+            args={'name': name},
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
         if __opts__.get('delete_sshkeys', False) is True:
             salt.utils.cloud.remove_sshkey(getattr(node, __opts__.get('ssh_interface', 'public_ips'))[0])
         if __opts__.get('update_cachedir', False) is True:
-            salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
-        salt.utils.cloud.cachedir_index_del(name)
+            __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.cachedir_index_del'](name)
         return True
 
     log.error('Failed to Destroy VM: {0}'.format(name))
@@ -638,13 +660,18 @@ def request_instance(vm_=None, call=None):
 
     kwargs.update(get_block_mapping_opts(vm_))
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(vm_['name']),
-        {'kwargs': {'name': kwargs['name'],
-                    'image': kwargs.get('image_id', 'Boot From Volume'),
-                    'size': kwargs['flavor_id']}},
+        args={
+            'kwargs': {
+                'name': kwargs['name'],
+                'image': kwargs.get('image_id', 'Boot From Volume'),
+                'size': kwargs['flavor_id'],
+            }
+        },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -661,27 +688,31 @@ def request_instance(vm_=None, call=None):
     if data.extra.get('password', None) is None and vm_.get('key_filename', None) is None:
         raise SaltCloudSystemExit('No password returned.  Set ssh_key_file.')
 
-    floating_ip_conf = config.get_cloud_config_value('floating_ip', vm_, __opts__, search_global=False)
+    floating_ip_conf = config.get_cloud_config_value('floating_ip',
+                                                     vm_,
+                                                     __opts__,
+                                                     search_global=False,
+                                                     default={})
     if floating_ip_conf.get('auto_assign', False):
         pool = floating_ip_conf.get('pool', 'public')
-        for fl_ip, opts in conn.floating_ip_list().iteritems():
-            if opts['instance_id'] is None and opts['pool'] == pool:
+        floating_ip = None
+        for fl_ip, opts in six.iteritems(conn.floating_ip_list()):
+            if opts['fixed_ip'] is None and opts['pool'] == pool:
                 floating_ip = fl_ip
                 break
-            else:
-                floating_ip = conn.floating_ip_create(pool)
-
+        if floating_ip is None:
+            floating_ip = conn.floating_ip_create(pool)['ip']
         try:
             conn.floating_ip_associate(kwargs['name'], floating_ip)
             vm_['floating_ip'] = floating_ip
         except Exception as exc:
             raise SaltCloudSystemExit(
-            'Error assigning floating_ip for {0} on Nova\n\n'
-            'The following exception was thrown by libcloud when trying to '
-            'assing a floating ip: {1}\n'.format(
-                vm_['name'], exc
+                'Error assigning floating_ip for {0} on Nova\n\n'
+                'The following exception was thrown by libcloud when trying to '
+                'assing a floating ip: {1}\n'.format(
+                    vm_['name'], exc
+                )
             )
-        )
 
     vm_['password'] = data.extra.get('password', '')
 
@@ -720,15 +751,16 @@ def create(vm_):
     if 'provider' in vm_:
         vm_['driver'] = vm_.pop('provider')
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
     conn = get_conn()
@@ -831,7 +863,7 @@ def create(vm_):
         #         network.  If that network does not exist in the 'addresses' dictionary, then SaltCloud will
         #         use the initial access_ip, and not overwrite anything.
 
-        if any((cloudnetwork(vm_), rackconnect(vm_))) and (ssh_interface(vm_) != 'private_ips' or rcv3):
+        if any((cloudnetwork(vm_), rackconnect(vm_))) and (ssh_interface(vm_) != 'private_ips' or rcv3) and access_ip != '':
             data.public_ips = [access_ip, ]
             return data
 
@@ -956,7 +988,7 @@ def create(vm_):
     vm_['ssh_host'] = ip_address
     vm_['salt_host'] = salt_ip_address
 
-    ret = salt.utils.cloud.bootstrap(vm_, __opts__)
+    ret = __utils__['cloud.bootstrap'](vm_, __opts__)
 
     ret.update(data.__dict__)
 
@@ -981,16 +1013,15 @@ def create(vm_):
         'public_ips': data.public_ips
     }
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        event_data,
+        args=event_data,
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
-    salt.utils.cloud.cachedir_index_add(
-    vm_['name'], vm_['profile'], 'nova', vm_['driver']
-    )
+    __utils__['cloud.cachedir_index_add'](vm_['name'], vm_['profile'], 'nova', vm_['driver'])
     return ret
 
 
@@ -1090,8 +1121,28 @@ def list_nodes_full(call=None, **kwargs):
         except IndexError as exc:
             ret = {}
 
-    salt.utils.cloud.cache_node_list(ret, __active_provider_name__.split(':')[0], __opts__)
+    __utils__['cloud.cache_node_list'](ret, __active_provider_name__.split(':')[0], __opts__)
     return ret
+
+
+def list_nodes_min(call=None, **kwargs):
+    '''
+    Return a list of the VMs that in this location
+    '''
+    if call == 'action':
+        raise SaltCloudSystemExit(
+            (
+                'The list_nodes_min function must be called with'
+                ' -f or --function.'
+            )
+        )
+
+    conn = get_conn()
+    server_list = conn.server_list_min()
+
+    if not server_list:
+        return {}
+    return server_list
 
 
 def list_nodes_select(call=None):

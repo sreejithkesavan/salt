@@ -3,7 +3,7 @@
 Manage Apigateway Rest APIs
 =================
 
-.. versionadded:: Carbon
+.. versionadded:: 2016.11.0
 
 Create and destroy rest apis depending on a swagger version 2 definition file.
 Be aware that this interacts with Amazon's services, and so may incur charges.
@@ -57,10 +57,8 @@ import json
 import yaml
 
 # Import Salt Libs
+import salt.ext.six as six
 import salt.utils
-from salt.ext.six import string_types
-
-# Import 3rd Party Libs
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +73,8 @@ def __virtual__():
 def present(name, api_name, swagger_file, stage_name, api_key_required,
             lambda_integration_role, lambda_region=None, stage_variables=None,
             region=None, key=None, keyid=None, profile=None,
-            lambda_funcname_format='{stage}_{api}_{resource}_{method}'):
+            lambda_funcname_format='{stage}_{api}_{resource}_{method}',
+            authorization_type='NONE'):
     '''
     Ensure the spcified api_name with the corresponding swaggerfile is deployed to the
     given stage_name in AWS ApiGateway.
@@ -200,6 +199,10 @@ def present(name, api_name, swagger_file, stage_name, api_key_required,
         Please review the earlier example for the usage.  The only substituable keys in the funcname
         format are {stage}, {api}, {resource}, {method}.
         Any other keys or positional subsitution parameters will be flagged as an invalid input.
+
+    authorization_type
+        This field can be either 'NONE', or 'AWS_IAM'.  This will be applied to all methods in the given
+        swagger spec file.  Default is set to 'NONE'
     '''
     ret = {'name': name,
            'result': True,
@@ -272,7 +275,8 @@ def present(name, api_name, swagger_file, stage_name, api_key_required,
         ret = swagger.deploy_resources(ret,
                                        api_key_required=api_key_required,
                                        lambda_integration_role=lambda_integration_role,
-                                       lambda_region=lambda_region)
+                                       lambda_region=lambda_region,
+                                       authorization_type=authorization_type)
         if ret.get('abort'):
             return ret
 
@@ -294,7 +298,7 @@ def _get_stage_variables(stage_variables):
     if stage_variables is None:
         return ret
 
-    if isinstance(stage_variables, string_types):
+    if isinstance(stage_variables, six.string_types):
         if stage_variables in __opts__:
             ret = __opts__[stage_variables]
         master_opts = __pillar__.get('master', {})
@@ -433,7 +437,7 @@ def _object_reducer(o, names=('id', 'name', 'path', 'httpMethod',
     '''
     result = {}
     if isinstance(o, dict):
-        for k, v in o.iteritems():
+        for k, v in six.iteritems(o):
             if isinstance(v, dict):
                 reduced = v if k == 'variables' else _object_reducer(v, names)
                 if reduced or _name_matches(k, names):
@@ -534,14 +538,19 @@ class _Swagger(object):
                         '  "cognitoIdentityId":"$context.identity.cognitoIdentityId",\n'
                         '  "cognitoIdentityPoolId":"$context.identity.cognitoIdentityPoolId",\n'
                         '  "cognitoAuthenticationType":"$context.identity.cognitoAuthenticationType",\n'
-                        '  "cognitoAuthenticationProvider":"$context.identity.cognitoAuthenticationProvider",\n'
+                        '  "cognitoAuthenticationProvider":["$util.escapeJavaScript($context.identity.cognitoAuthenticationProvider)"],\n'
                         '  "caller":"$context.identity.caller",\n'
                         '  "apiKey":"$context.identity.apiKey",\n'
                         '  "accountId":"$context.identity.accountId"\n'
                         '}\n'
                         '},\n'
                         '"body_params" : $input.json(\'$\'),\n'
-                        '"stage_variables" : "$stageVariables"\n'
+                        '"stage_variables": {\n'
+                        '#foreach($variable in $stageVariables.keySet())\n'
+                        '"$variable": "$util.escapeJavaScript($stageVariables.get($variable))"\n'
+                        '#if($foreach.hasNext), #end\n'
+                        '#end\n'
+                        '}\n'
                         '}'}
     REQUEST_OPTION_TEMPLATE = {'application/json': '{"statusCode": 200}'}
 
@@ -690,13 +699,13 @@ class _Swagger(object):
         to handle response code mapping/integration
         '''
         for path, ops in paths:
-            for opname, opobj in ops.iteritems():
+            for opname, opobj in six.iteritems(ops):
                 if opname not in _Swagger.SWAGGER_OPERATION_NAMES:
                     continue
 
                 if 'responses' not in opobj:
                     raise ValueError('missing mandatory responses field in path item object')
-                for rescode, resobj in opobj.get('responses').iteritems():
+                for rescode, resobj in six.iteritems(opobj.get('responses')):
                     if not self._is_http_error_rescode(str(rescode)):
                         continue
 
@@ -846,7 +855,7 @@ class _Swagger(object):
         for path in paths:
             if not path.startswith('/'):
                 raise ValueError('Path object {0} should start with /. Please fix it'.format(path))
-        return paths.iteritems()
+        return six.iteritems(paths)
 
     @property
     def basePath(self):
@@ -971,7 +980,7 @@ class _Swagger(object):
         if not res.get('overwrite'):
             ret['result'] = False
             ret['abort'] = True
-            ret['common'] = res.get('error')
+            ret['comment'] = res.get('error')
         else:
             ret = _log_changes(ret,
                                'overwrite_stage_variables',
@@ -1094,7 +1103,7 @@ class _Swagger(object):
             if not res.get('set'):
                 ret['abort'] = True
                 ret['result'] = False
-                ret['common'] = res.get('error')
+                ret['comment'] = res.get('error')
             else:
                 ret = _log_changes(ret,
                                    'publish_api (reassociate deployment, set stage_variables)',
@@ -1110,7 +1119,7 @@ class _Swagger(object):
             if not res.get('created'):
                 ret['abort'] = True
                 ret['result'] = False
-                ret['common'] = res.get('error')
+                ret['comment'] = res.get('error')
             else:
                 ret = _log_changes(ret, 'publish_api (new deployment)', res.get('deployment'))
         return ret
@@ -1247,7 +1256,7 @@ class _Swagger(object):
                 # need to walk each property object
                 properties = obj_schema.get('properties')
                 if properties:
-                    for _, prop_obj_schema in properties.iteritems():
+                    for _, prop_obj_schema in six.iteritems(properties):
                         dep_models_list.extend(self._build_dependent_model_list(prop_obj_schema))
         return list(set(dep_models_list))
 
@@ -1256,7 +1265,7 @@ class _Swagger(object):
         Helper function to build a map of model to their list of model reference dependencies
         '''
         ret = {}
-        for model, schema in self._models().iteritems():
+        for model, schema in six.iteritems(self._models()):
             dep_list = self._build_dependent_model_list(schema)
             ret[model] = dep_list
         return ret
@@ -1269,7 +1278,7 @@ class _Swagger(object):
         if not models_dict:
             return next_model
 
-        for model, dependencies in models_dict.iteritems():
+        for model, dependencies in six.iteritems(models_dict):
             if dependencies == []:
                 next_model = model
                 break
@@ -1280,7 +1289,7 @@ class _Swagger(object):
 
         # remove the model from other depednencies before returning
         models_dict.pop(next_model)
-        for model, dep_list in models_dict.iteritems():
+        for model, dep_list in six.iteritems(models_dict):
             if next_model in dep_list:
                 dep_list.remove(next_model)
 
@@ -1410,7 +1419,7 @@ class _Swagger(object):
     def _find_patterns(self, o):
         result = []
         if isinstance(o, dict):
-            for k, v in o.iteritems():
+            for k, v in six.iteritems(o):
                 if isinstance(v, dict):
                     result.extend(self._find_patterns(v))
                 else:
@@ -1459,7 +1468,7 @@ class _Swagger(object):
                 'response_templates': response_templates}
 
     def _deploy_method(self, ret, resource_path, method_name, method_data, api_key_required,
-                       lambda_integration_role, lambda_region):
+                       lambda_integration_role, lambda_region, authorization_type):
         '''
         Method to create a method for the given resource path, along with its associated
         request and response integrations.
@@ -1487,14 +1496,22 @@ class _Swagger(object):
         lambda_region
             the region for the lambda function that Api Gateway will integrate to.
 
+        authorization_type
+            'NONE' or 'AWS_IAM'
+
         '''
         method = self._parse_method_data(method_name.lower(), method_data)
 
-        # authorizationType is hard coded to 'NONE' for now.
+        # for options method to enable CORS, api_key_required will be set to False always.
+        # authorization_type will be set to 'NONE' always.
+        if method_name.lower() == 'options':
+            api_key_required = False
+            authorization_type = 'NONE'
+
         m = __salt__['boto_apigateway.create_api_method'](restApiId=self.restApiId,
                                                           resourcePath=resource_path,
                                                           httpMethod=method_name.upper(),
-                                                          authorizationType='NONE',
+                                                          authorizationType=authorization_type,
                                                           apiKeyRequired=api_key_required,
                                                           requestParameters=method.get('params'),
                                                           requestModels=method.get('models'),
@@ -1528,7 +1545,7 @@ class _Swagger(object):
         ret = _log_changes(ret, '_deploy_method.create_api_integration', integration)
 
         if 'responses' in method_data:
-            for response, response_data in method_data['responses'].iteritems():
+            for response, response_data in six.iteritems(method_data['responses']):
                 httpStatus = str(response)
                 method_response = self._parse_method_response(method_name.lower(),
                                                               _Swagger.SwaggerMethodResponse(response_data), httpStatus)
@@ -1564,7 +1581,7 @@ class _Swagger(object):
 
         return ret
 
-    def deploy_resources(self, ret, api_key_required, lambda_integration_role, lambda_region):
+    def deploy_resources(self, ret, api_key_required, lambda_integration_role, lambda_region, authorization_type):
         '''
         Method to deploy resources defined in the swagger file.
 
@@ -1581,6 +1598,8 @@ class _Swagger(object):
         lambda_region
             the region for the lambda function that Api Gateway will integrate to.
 
+        authorization_type
+            'NONE' or 'AWS_IAM'
         '''
 
         for path, pathData in self.paths:
@@ -1591,8 +1610,8 @@ class _Swagger(object):
                 ret = _log_error_and_abort(ret, resource)
                 return ret
             ret = _log_changes(ret, 'deploy_resources', resource)
-            for method, method_data in pathData.iteritems():
+            for method, method_data in six.iteritems(pathData):
                 if method in _Swagger.SWAGGER_OPERATION_NAMES:
-                    ret = self._deploy_method(ret, path, method, method_data,
-                                              api_key_required, lambda_integration_role, lambda_region)
+                    ret = self._deploy_method(ret, path, method, method_data, api_key_required,
+                                              lambda_integration_role, lambda_region, authorization_type)
         return ret

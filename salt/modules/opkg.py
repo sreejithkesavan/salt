@@ -2,11 +2,17 @@
 '''
 Support for Opkg
 
+.. important::
+    If you feel that Salt should be using this module to manage packages on a
+    minion, and it is using a different module (or gives an error similar to
+    *'pkg.install' is not available*), see :ref:`here
+    <module-provider-override>`.
+
 .. versionadded: 2016.3.0
 
 .. note::
 
-    For version comparision support, the ``opkg-utils`` package must be
+    For version comparison support, the ``opkg-utils`` package must be
     installed.
 
 '''
@@ -360,10 +366,13 @@ def upgrade(refresh=True):
     '''
     Upgrades all packages via ``opkg upgrade``
 
-    Returns a dict containing the changes.
+    Returns a dictionary containing the changes:
+
+    .. code-block:: python
 
         {'<package>':  {'old': '<old-version>',
                         'new': '<new-version>'}}
+
 
     CLI Example:
 
@@ -382,19 +391,18 @@ def upgrade(refresh=True):
     old = list_pkgs()
 
     cmd = ['opkg', 'upgrade']
-    call = __salt__['cmd.run_all'](cmd,
-                                   output_loglevel='trace',
-                                   python_shell=False,
-                                   redirect_stderr=True)
-
-    if call['retcode'] != 0:
-        ret['result'] = False
-        if call['stdout']:
-            ret['comment'] = call['stdout']
-
+    result = __salt__['cmd.run_all'](cmd,
+                                     output_loglevel='trace',
+                                     python_shell=False)
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret['changes'] = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.compare_dicts(old, new)
+
+    if result['retcode'] != 0:
+        raise CommandExecutionError(
+            'Problem encountered upgrading packages',
+            info={'changes': ret, 'result': result}
+        )
 
     return ret
 
@@ -689,11 +697,16 @@ def upgrade_available(name):
 
 
 @_which('opkg-compare-versions')
-def version_cmp(pkg1, pkg2):
+def version_cmp(pkg1, pkg2, ignore_epoch=False):
     '''
     Do a cmp-style comparison on two packages. Return -1 if pkg1 < pkg2, 0 if
     pkg1 == pkg2, and 1 if pkg1 > pkg2. Return None if there was a problem
     making the comparison.
+
+    ignore_epoch : False
+        Set to ``True`` to ignore the epoch when comparing versions
+
+        .. versionadded:: 2016.3.4
 
     CLI Example:
 
@@ -701,6 +714,10 @@ def version_cmp(pkg1, pkg2):
 
         salt '*' pkg.version_cmp '0.2.4-0' '0.2.4.1-0'
     '''
+    normalize = lambda x: str(x).split(':', 1)[-1] if ignore_epoch else str(x)
+    pkg1 = normalize(pkg1)
+    pkg2 = normalize(pkg2)
+
     cmd_compare = ['opkg-compare-versions']
     for oper, ret in (("<<", -1), ("=", 0), (">>", 1)):
         cmd = cmd_compare[:]

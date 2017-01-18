@@ -55,7 +55,8 @@ from salt.version import (
     )
 # is there not SaltStackVersion.current() to get
 # the version of the salt running this code??
-CUR_VER = SaltStackVersion(__version__[0], __version__[1])
+_version_ary = __version__.split('.')
+CUR_VER = SaltStackVersion(_version_ary[0], _version_ary[1])
 BORON = SaltStackVersion.from_name('Boron')
 
 # pylint: disable=import-error
@@ -161,7 +162,6 @@ def _auth(profile=None, api_version=2, **connection_args):
         log.debug('Calling keystoneclient.v2_0.client.Client(' +
             '{0}, **{1})'.format(ks_endpoint, kwargs))
         keystone = kstone.Client(**kwargs)
-        log.debug(help(keystone.get_token))
         kwargs['token'] = keystone.get_token(keystone.session)
         # This doesn't realy prevent the password to show up
         # in the minion log as keystoneclient.session is
@@ -249,9 +249,9 @@ def image_create(name, location=None, profile=None, visibility=None,
                'raw', 'qcow2', 'vdi', 'iso']
     # 'location' and 'visibility' are the parameters used in
     # Glance API v2. For now we have to use v1 for now (see below)
-    # but this modules interface will change in Carbon.
+    # but this modules interface will change in Nitrogen.
     if copy_from is not None or is_public is not None:
-        warn_until('Carbon', 'The parameters \'copy_from\' and '
+        warn_until('Nitrogen', 'The parameters \'copy_from\' and '
             '\'is_public\' are deprecated and will be removed. '
             'Use \'location\' and \'visibility\' instead.')
     if is_public is not None and visibility is not None:
@@ -380,8 +380,8 @@ def image_show(id=None, name=None, profile=None):  # pylint: disable=C0103
     ret_details = {}
     # I may want to use this code on Beryllium
     # until we got 2016.3.0 packages for Ubuntu
-    # so please keep this code until Carbon!
-    warn_until('Carbon', 'Starting with \'2016.3.0\' image_show() '
+    # so please keep this code until Nitrogen!
+    warn_until('Nitrogen', 'Starting with \'2016.3.0\' image_show() '
             'will stop wrapping the returned image in another '
             'dictionary.')
     if CUR_VER < BORON:
@@ -414,8 +414,8 @@ def image_list(id=None, profile=None, name=None):  # pylint: disable=C0103
     #
     # I may want to use this code on Beryllium
     # until we got 2016.3.0 packages for Ubuntu
-    # so please keep this code until Carbon!
-    warn_until('Carbon', 'Starting in \'2016.3.0\' image_list() '
+    # so please keep this code until Nitrogen!
+    warn_until('Nitrogen', 'Starting in \'2016.3.0\' image_list() '
         'will return a list of images instead of a dictionary '
         'keyed with the images\' names.')
     if CUR_VER < BORON:
@@ -447,6 +447,12 @@ def image_schema(profile=None):
     '''
     Returns names and descriptions of the schema "image"'s
     properties for this profile's instance of glance
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glance.image_schema
     '''
     return schema_get('image', profile)
 
@@ -458,6 +464,13 @@ def image_update(id=None, name=None, profile=None, **kwargs):  # pylint: disable
     - min_ram (in MB)
     - protected (bool)
     - visibility ('public' or 'private')
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glance.image_update id=c2eb2eb0-53e1-4a80-b990-8ec887eae7df
+        salt '*' glance.image_update name=f16-jeos
     '''
     if id:
         image = image_show(id=id, profile=profile)
@@ -495,8 +508,8 @@ def image_update(id=None, name=None, profile=None, **kwargs):  # pylint: disable
     updated = g_client.images.update(image['id'], **to_update)
     # I may want to use this code on Beryllium
     # until we got 2016.3.0 packages for Ubuntu
-    # so please keep this code until Carbon!
-    warn_until('Carbon', 'Starting with \'2016.3.0\' image_update() '
+    # so please keep this code until Nitrogen!
+    warn_until('Nitrogen', 'Starting with \'2016.3.0\' image_update() '
             'will stop wrapping the returned, updated image in '
             'another dictionary.')
     if CUR_VER < BORON:
@@ -511,6 +524,12 @@ def schema_get(name, profile=None):
       - images
       - member
       - members
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' glance.schema_get name=f16-jeos
     '''
     g_client = _auth(profile)
     pformat = pprint.PrettyPrinter(indent=4).pformat

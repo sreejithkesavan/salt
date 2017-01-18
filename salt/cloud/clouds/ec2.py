@@ -11,13 +11,10 @@ To use the EC2 cloud module, set up the cloud configuration at
 .. code-block:: yaml
 
     my-ec2-config:
-      # The EC2 API authentication id, set this and/or key to
-      # 'use-instance-role-credentials' to use the instance role credentials
-      # from the meta-data if running on an AWS instance
+      # EC2 API credentials: Access Key ID and Secret Access Key.
+      # Alternatively, to use IAM Instance Role credentials available via
+      # EC2 metadata set both id and key to 'use-instance-role-credentials'
       id: GKTADJGHEIQSXMKKRBJ08H
-      # The EC2 API authentication key, set this and/or id to
-      # 'use-instance-role-credentials' to use the instance role credentials
-      # from the meta-data if running on an AWS instance
       key: askdjghsdfjkghWupUjasdflkdfklgjsdfjajkghs
       # The ssh keyname to use
       keyname: default
@@ -93,10 +90,11 @@ import decimal
 
 # Import Salt Libs
 import salt.utils
-from salt import syspaths
 from salt._compat import ElementTree as ET
 import salt.utils.http as http
 import salt.utils.aws as aws
+import salt.loader
+from salt.template import compile_template
 
 # Import salt.cloud libs
 import salt.utils.cloud
@@ -138,12 +136,14 @@ log = logging.getLogger(__name__)
 
 EC2_LOCATIONS = {
     'ap-northeast-1': 'ec2_ap_northeast',
+    'ap-northeast-2': 'ec2_ap_northeast_2',
     'ap-southeast-1': 'ec2_ap_southeast',
     'ap-southeast-2': 'ec2_ap_southeast_2',
     'eu-west-1': 'ec2_eu_west',
     'eu-central-1': 'ec2_eu_central',
     'sa-east-1': 'ec2_sa_east',
     'us-east-1': 'ec2_us_east',
+    'us-gov-west-1': 'ec2_us_gov_west_1',
     'us-west-1': 'ec2_us_west',
     'us-west-2': 'ec2_us_west_oregon',
 }
@@ -644,6 +644,46 @@ def avail_sizes(call=None):
                 'ram': '60 GiB'
             }
         },
+        'Dense Storage': {
+            'd2.xlarge': {
+                'id': 'd2.xlarge',
+                'cores': '4',
+                'disk': '6 TiB (3 x 2 TiB hard disk drives)',
+                'ram': '30.5 GiB'
+            },
+            'd2.2xlarge': {
+                'id': 'd2.2xlarge',
+                'cores': '8',
+                'disk': '12 TiB (6 x 2 TiB hard disk drives)',
+                'ram': '61 GiB'
+            },
+            'd2.4xlarge': {
+                'id': 'd2.4xlarge',
+                'cores': '16',
+                'disk': '24 TiB (12 x 2 TiB hard disk drives)',
+                'ram': '122 GiB'
+            },
+            'd2.8xlarge': {
+                'id': 'd2.8xlarge',
+                'cores': '36',
+                'disk': '24 TiB (24 x 2 TiB hard disk drives)',
+                'ram': '244 GiB'
+            },
+        },
+        'GPU': {
+            'g2.2xlarge': {
+                'id': 'g2.2xlarge',
+                'cores': '8',
+                'disk': '60 GiB (1 x 60 GiB SSD)',
+                'ram': '15 GiB'
+            },
+            'g2.8xlarge': {
+                'id': 'g2.8xlarge',
+                'cores': '32',
+                'disk': '240 GiB (2 x 120 GiB SSD)',
+                'ram': '60 GiB'
+            },
+        },
         'High I/O': {
             'i2.xlarge': {
                 'id': 'i2.xlarge',
@@ -1119,11 +1159,12 @@ def securitygroupid(vm_):
     securitygroupid_list = config.get_cloud_config_value(
         'securitygroupid', vm_, __opts__, search_global=False
     )
+    # If the list is None, then the set will remain empty
+    # If the list is already a set then calling 'set' on it is a no-op
+    # If the list is a string, then calling 'set' generates a one-element set
+    # If the list is anything else, stacktrace
     if securitygroupid_list:
-        if isinstance(securitygroupid_list, list):
-            securitygroupid_set.union(securitygroupid_list)
-        else:
-            securitygroupid_set.add(securitygroupid_list)
+        securitygroupid_set = securitygroupid_set.union(set(securitygroupid_list))
 
     securitygroupname_list = config.get_cloud_config_value(
         'securitygroupname', vm_, __opts__, search_global=False
@@ -1390,7 +1431,7 @@ def _modify_eni_properties(eni_id, properties=None, vm_=None):
 
     params = {'Action': 'ModifyNetworkInterfaceAttribute',
               'NetworkInterfaceId': eni_id}
-    for k, v in properties.iteritems():
+    for k, v in six.iteritems(properties):
         params[k] = v
 
     retries = 5
@@ -1651,6 +1692,16 @@ def request_instance(vm_=None, call=None):
                 userdata = fh_.read()
 
     if userdata is not None:
+        render_opts = __opts__.copy()
+        render_opts.update(vm_)
+        renderer = __opts__.get('renderer', 'yaml_jinja')
+        rend = salt.loader.render(render_opts, {})
+        blacklist = __opts__['renderer_blacklist']
+        whitelist = __opts__['renderer_whitelist']
+        userdata = compile_template(
+            ':string:', rend, renderer, blacklist, whitelist, input_data=userdata,
+        )
+
         params[spot_prefix + 'UserData'] = base64.b64encode(userdata)
 
     vm_size = config.get_cloud_config_value(
@@ -1836,8 +1887,8 @@ def request_instance(vm_=None, call=None):
             termination_key = '{0}BlockDeviceMapping.{1}.Ebs.DeleteOnTermination'.format(spot_prefix, dev_index)
             params[termination_key] = str(set_del_root_vol_on_destroy).lower()
 
-            # Preserve the volume type if specified
-            if rd_type is not None:
+            # Use default volume type if not specified
+            if ex_blockdevicemappings and 'Ebs.VolumeType' not in ex_blockdevicemappings[dev_index]:
                 type_key = '{0}BlockDeviceMapping.{1}.Ebs.VolumeType'.format(spot_prefix, dev_index)
                 params[type_key] = rd_type
 
@@ -1850,11 +1901,12 @@ def request_instance(vm_=None, call=None):
             '\'del_all_vols_on_destroy\' should be a boolean value.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(vm_['name']),
-        {'kwargs': params, 'location': location},
+        args={'kwargs': params, 'location': location},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -1929,10 +1981,11 @@ def request_instance(vm_=None, call=None):
                           'Nothing else we can do here.')
                 return False
 
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'waiting for spot instance',
             'salt/cloud/{0}/waiting_for_spot'.format(vm_['name']),
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
 
@@ -1992,11 +2045,12 @@ def query_instance(vm_=None, call=None):
 
     instance_id = vm_['instance_id']
     location = vm_.get('location', get_location(vm_))
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'querying instance',
         'salt/cloud/{0}/querying'.format(vm_['name']),
-        {'instance_id': instance_id},
+        args={'instance_id': instance_id},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -2068,9 +2122,9 @@ def query_instance(vm_=None, call=None):
 
         log.debug('Returned query data: {0}'.format(data))
 
-        if 'ipAddress' in data[0]['instancesSet']['item']:
+        if ssh_interface(vm_) == 'public_ips' and 'ipAddress' in data[0]['instancesSet']['item']:
             log.error(
-                'Public IP not detected.  If private IP is meant for bootstrap you must specify "ssh_interface: private_ips" in your profile.'
+                'Public IP not detected.'
             )
             return data
         if ssh_interface(vm_) == 'private_ips' and \
@@ -2098,11 +2152,12 @@ def query_instance(vm_=None, call=None):
             raise SaltCloudSystemExit(str(exc))
 
     if 'reactor' in vm_ and vm_['reactor'] is True:
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'instance queried',
             'salt/cloud/{0}/query_reactor'.format(vm_['name']),
-            {'data': data},
+            args={'data': data},
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
 
@@ -2136,11 +2191,12 @@ def wait_for_instance(
         'gateway', get_ssh_gateway_config(vm_)
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'waiting for ssh',
         'salt/cloud/{0}/waiting_for_ssh'.format(vm_['name']),
-        {'ip_address': ip_address},
+        args={'ip_address': ip_address},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -2315,11 +2371,12 @@ def wait_for_instance(
         )
 
     if 'reactor' in vm_ and vm_['reactor'] is True:
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'ssh is available',
             'salt/cloud/{0}/ssh_ready_reactor'.format(vm_['name']),
-            {'ip_address': ip_address},
+            args={'ip_address': ip_address},
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
 
@@ -2372,7 +2429,7 @@ def create(vm_=None, call=None):
 
         if not os.path.exists(key_filename):
             raise SaltCloudSystemExit(
-                'The EC2 key file {0!r} does not exist.\n'.format(
+                'The EC2 key file \'{0}\' does not exist.\n'.format(
                     key_filename
                 )
             )
@@ -2382,23 +2439,24 @@ def create(vm_=None, call=None):
         )
         if key_mode not in ('0400', '0600'):
             raise SaltCloudSystemExit(
-                'The EC2 key file {0!r} needs to be set to mode 0400 or 0600.\n'.format(
+                'The EC2 key file \'{0}\' needs to be set to mode 0400 or 0600.\n'.format(
                     key_filename
                 )
             )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
-    salt.utils.cloud.cachedir_index_add(
+    __utils__['cloud.cachedir_index_add'](
         vm_['name'], vm_['profile'], 'ec2', vm_['driver']
     )
 
@@ -2419,7 +2477,12 @@ def create(vm_=None, call=None):
         vm_,
         __opts__,
         default_users=(
-            'ec2-user', 'ubuntu', 'fedora', 'admin', 'bitnami', 'root'
+            'ec2-user',  # Amazon Linux, Fedora, RHEL; FreeBSD
+            'centos',    # CentOS AMIs from AWS Marketplace
+            'ubuntu',    # Ubuntu
+            'admin',     # Debian GNU/Linux
+            'bitnami',   # BitNami AMIs
+            'root'       # Last resort, default user on RHEL 5, SUSE
         )
     )
 
@@ -2488,11 +2551,12 @@ def create(vm_=None, call=None):
 
     tags['Name'] = vm_['name']
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'setting tags',
         'salt/cloud/{0}/tagging'.format(vm_['name']),
-        {'tags': tags},
+        args={'tags': tags},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -2557,11 +2621,12 @@ def create(vm_=None, call=None):
         'volumes', vm_, __opts__, search_global=True
     )
     if volumes:
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'attaching volumes',
             'salt/cloud/{0}/attaching_volumes'.format(vm_['name']),
-            {'volumes': volumes},
+            args={'volumes': volumes},
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
 
@@ -2596,7 +2661,7 @@ def create(vm_=None, call=None):
             ))
             return {}
 
-    for key, value in six.iteritems(salt.utils.cloud.bootstrap(vm_, __opts__)):
+    for key, value in six.iteritems(__utils__['cloud.bootstrap'](vm_, __opts__)):
         ret.setdefault(key, value)
 
     log.info('Created Cloud VM \'{0[name]}\''.format(vm_))
@@ -2617,11 +2682,12 @@ def create(vm_=None, call=None):
     if ssm_document:
         event_data['ssm_document'] = ssm_document
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        event_data,
+        args=event_data,
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -2646,7 +2712,11 @@ def queue_instances(instances):
     '''
     for instance_id in instances:
         node = _get_node(instance_id=instance_id)
-        salt.utils.cloud.cache_node(node, __active_provider_name__, __opts__)
+        for name in node:
+            if instance_id == node[name]['instanceId']:
+                __utils__['cloud.cache_node'](node[name],
+                                            __active_provider_name__,
+                                            __opts__)
 
 
 def create_attach_volumes(name, kwargs, call=None, wait_to_finish=True):
@@ -2688,6 +2758,8 @@ def create_attach_volumes(name, kwargs, call=None, wait_to_finish=True):
                 '\'snapshot\', or \'size\''
             )
 
+        if 'tags' in volume:
+            volume_dict['tags'] = volume['tags']
         if 'type' in volume:
             volume_dict['type'] = volume['type']
         if 'iops' in volume:
@@ -3033,11 +3105,12 @@ def destroy(name, call=None):
         quiet=True
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name, 'instance_id': instance_id},
+        args={'name': name, 'instance_id': instance_id},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -3095,18 +3168,19 @@ def destroy(name, call=None):
                            sigver='4')
         ret['spotInstance'] = result[0]
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name, 'instance_id': instance_id},
+        args={'name': name, 'instance_id': instance_id},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
-    salt.utils.cloud.cachedir_index_del(name)
+    __utils__['cloud.cachedir_index_del'](name)
 
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
 
     return ret
 
@@ -3193,7 +3267,10 @@ def show_instance(name=None, instance_id=None, call=None, kwargs=None):
         )
 
     node = _get_node(name=name, instance_id=instance_id)
-    salt.utils.cloud.cache_node(node, __active_provider_name__, __opts__)
+    for name in node:
+        __utils__['cloud.cache_node'](node[name],
+                                    __active_provider_name__,
+                                    __opts__)
     return node
 
 
@@ -3254,6 +3331,7 @@ def list_nodes_full(location=None, call=None):
             get_location(vm_) for vm_ in six.itervalues(__opts__['profiles'])
             if _vm_provider_driver(vm_)
         )
+
         # If there aren't any profiles defined for EC2, check
         # the provider config file, or use the default location.
         if not locations:
@@ -3359,7 +3437,7 @@ def _list_nodes_full(location=None):
 
     ret = _extract_instance_info(instances)
 
-    salt.utils.cloud.cache_node_list(ret, provider, __opts__)
+    __utils__['cloud.cache_node_list'](ret, provider, __opts__)
     return ret
 
 
@@ -4410,6 +4488,7 @@ def get_console_output(
 
     ret = {}
     data = aws.query(params,
+                     return_root=True,
                      location=location,
                      provider=get_provider(),
                      opts=__opts__,
@@ -4584,7 +4663,7 @@ def _parse_pricing(url, name):
         regions[region['region']] = sizes
 
     outfile = os.path.join(
-        syspaths.CACHE_DIR, 'cloud', 'ec2-pricing-{0}.p'.format(name)
+        __opts__['cachedir'], 'ec2-pricing-{0}.p'.format(name)
     )
     with salt.utils.fopen(outfile, 'w') as fho:
         msgpack.dump(regions, fho)
@@ -4648,7 +4727,7 @@ def show_pricing(kwargs=None, call=None):
         name = 'linux'
 
     pricefile = os.path.join(
-        syspaths.CACHE_DIR, 'cloud', 'ec2-pricing-{0}.p'.format(name)
+        __opts__['cachedir'], 'ec2-pricing-{0}.p'.format(name)
     )
 
     if not os.path.isfile(pricefile):

@@ -18,7 +18,8 @@ import subprocess
 # Import third party libs
 import jinja2
 import yaml
-import salt.ext.six as six
+import msgpack
+import salt.ext.six as _six
 import tornado
 
 # pylint: disable=import-error,no-name-in-module
@@ -53,11 +54,6 @@ except ImportError:
     # Older jinja does not need markupsafe
     HAS_MARKUPSAFE = False
 
-try:
-    import xml
-    HAS_XML = True
-except ImportError:
-    HAS_XML = False
 # pylint: enable=import-error,no-name-in-module
 
 try:
@@ -108,9 +104,10 @@ def get_tops(extra_mods='', so_mods=''):
             os.path.dirname(jinja2.__file__),
             os.path.dirname(yaml.__file__),
             os.path.dirname(tornado.__file__),
+            os.path.dirname(msgpack.__file__),
             ]
 
-    tops.append(six.__file__.replace('.pyc', '.py'))
+    tops.append(_six.__file__.replace('.pyc', '.py'))
 
     if HAS_CERTIFI:
         tops.append(os.path.dirname(certifi.__file__))
@@ -126,10 +123,6 @@ def get_tops(extra_mods='', so_mods=''):
 
     if HAS_SSL_MATCH_HOSTNAME:
         tops.append(os.path.dirname(os.path.dirname(ssl_match_hostname.__file__)))
-
-    if HAS_XML:
-        # For openSUSE, which apparently doesn't include the whole stdlib
-        tops.append(os.path.dirname(xml.__file__))
 
     for mod in [m for m in extra_mods.split(',') if m]:
         if mod not in locals() and mod not in globals():
@@ -203,7 +196,7 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods='',
                 pass
         else:
             return thintar
-    if six.PY3:
+    if _six.PY3:
         # Let's check for the minimum python 2 version requirement, 2.6
         py_shell_cmd = (
             python2_bin + ' -c \'from __future__ import print_function; import sys; '
@@ -229,21 +222,21 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods='',
 
     tops_py_version_mapping = {}
     tops = get_tops(extra_mods=extra_mods, so_mods=so_mods)
-    if six.PY2:
+    if _six.PY2:
         tops_py_version_mapping['2'] = tops
     else:
         tops_py_version_mapping['3'] = tops
 
     # TODO: Consider putting known py2 and py3 compatible libs in it's own sharable directory.
     #       This would reduce the thin size.
-    if six.PY2 and sys.version_info[0] == 2:
+    if _six.PY2 and sys.version_info[0] == 2:
         # Get python 3 tops
         py_shell_cmd = (
             python3_bin + ' -c \'import sys; import json; import salt.utils.thin; '
             'print(json.dumps(salt.utils.thin.get_tops(**(json.loads(sys.argv[1]))))); exit(0);\' '
             '\'{0}\''.format(json.dumps({'extra_mods': extra_mods, 'so_mods': so_mods}))
         )
-        cmd = subprocess.Popen(py_shell_cmd, stdout=subprocess.PIPE, shell=True)
+        cmd = subprocess.Popen(py_shell_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         stdout, stderr = cmd.communicate()
         if cmd.returncode == 0:
             try:
@@ -251,7 +244,7 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods='',
                 tops_py_version_mapping['3'] = tops
             except ValueError:
                 pass
-    if six.PY3 and sys.version_info[0] == 3:
+    if _six.PY3 and sys.version_info[0] == 3:
         # Get python 2 tops
         py_shell_cmd = (
             python2_bin + ' -c \'from __future__ import print_function; '
@@ -274,7 +267,7 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods='',
     except OSError:
         start_dir = None
     tempdir = None
-    for py_ver, tops in six.iteritems(tops_py_version_mapping):
+    for py_ver, tops in _six.iteritems(tops_py_version_mapping):
         for top in tops:
             base = os.path.basename(top)
             top_dirname = os.path.dirname(top)
@@ -289,7 +282,8 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods='',
                 os.chdir(tempdir)
             if not os.path.isdir(top):
                 # top is a single file module
-                tfp.add(base, arcname=os.path.join('py{0}'.format(py_ver), base))
+                if os.path.exists(os.path.join(top_dirname, base)):
+                    tfp.add(base, arcname=os.path.join('py{0}'.format(py_ver), base))
                 continue
             for root, dirs, files in os.walk(base, followlinks=True):
                 for name in files:
@@ -365,7 +359,7 @@ def gen_min(cachedir, extra_mods='', overwrite=False, so_mods='',
                 pass
         else:
             return mintar
-    if six.PY3:
+    if _six.PY3:
         # Let's check for the minimum python 2 version requirement, 2.6
         py_shell_cmd = (
             python2_bin + ' -c \'from __future__ import print_function; import sys; '
@@ -391,21 +385,21 @@ def gen_min(cachedir, extra_mods='', overwrite=False, so_mods='',
 
     tops_py_version_mapping = {}
     tops = get_tops(extra_mods=extra_mods, so_mods=so_mods)
-    if six.PY2:
+    if _six.PY2:
         tops_py_version_mapping['2'] = tops
     else:
         tops_py_version_mapping['3'] = tops
 
     # TODO: Consider putting known py2 and py3 compatible libs in it's own sharable directory.
     #       This would reduce the min size.
-    if six.PY2 and sys.version_info[0] == 2:
+    if _six.PY2 and sys.version_info[0] == 2:
         # Get python 3 tops
         py_shell_cmd = (
             python3_bin + ' -c \'import sys; import json; import salt.utils.thin; '
             'print(json.dumps(salt.utils.thin.get_tops(**(json.loads(sys.argv[1]))))); exit(0);\' '
             '\'{0}\''.format(json.dumps({'extra_mods': extra_mods, 'so_mods': so_mods}))
         )
-        cmd = subprocess.Popen(py_shell_cmd, stdout=subprocess.PIPE, shell=True)
+        cmd = subprocess.Popen(py_shell_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         stdout, stderr = cmd.communicate()
         if cmd.returncode == 0:
             try:
@@ -413,7 +407,7 @@ def gen_min(cachedir, extra_mods='', overwrite=False, so_mods='',
                 tops_py_version_mapping['3'] = tops
             except ValueError:
                 pass
-    if six.PY3 and sys.version_info[0] == 3:
+    if _six.PY3 and sys.version_info[0] == 3:
         # Get python 2 tops
         py_shell_cmd = (
             python2_bin + ' -c \'from __future__ import print_function; '
@@ -554,7 +548,7 @@ def gen_min(cachedir, extra_mods='', overwrite=False, so_mods='',
         'salt/output/nested.py',
     )
 
-    for py_ver, tops in six.iteritems(tops_py_version_mapping):
+    for py_ver, tops in _six.iteritems(tops_py_version_mapping):
         for top in tops:
             base = os.path.basename(top)
             top_dirname = os.path.dirname(top)

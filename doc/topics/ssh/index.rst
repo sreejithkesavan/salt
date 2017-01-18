@@ -18,7 +18,7 @@ standard ``salt`` commands.
 - Python is required on the remote system (unless using the ``-r`` option to send raw ssh commands)
 - On many systems, the ``salt-ssh`` executable will be in its own package, usually named
   ``salt-ssh``
-- The Salt SSH system does not supercede the standard Salt communication
+- The Salt SSH system does not supersede the standard Salt communication
   systems, it simply offers an SSH-based alternative that does not require
   ZeroMQ and a remote agent. Be aware that since all communication with Salt SSH is
   executed via SSH it is substantially slower than standard Salt with ZeroMQ.
@@ -99,6 +99,17 @@ Alternatively ssh agent forwarding can be used by setting the priv to agent-forw
 Calling Salt SSH
 ================
 
+.. note:: ``salt-ssh`` on RHEL/CentOS 5
+
+    The ``salt-ssh`` command requires at least python 2.6, which is not
+    installed by default on RHEL/CentOS 5.  An easy workaround in this
+    situation is to use the ``-r`` option to run a raw shell command that
+    installs python26:
+
+    .. code-block:: bash
+
+        salt-ssh centos-5-minion -r 'yum -y install epel-release ; yum -y install python26'
+
 The ``salt-ssh`` command can be easily executed in the same way as a salt
 command:
 
@@ -145,7 +156,7 @@ systems still need to be implemented.
     By default, Grains are settable through ``salt-ssh``. By
     default, these grains will *not* be persisted across reboots.
 
-    See the "thin_dir" setting in :doc:`Roster documentation </topics/ssh/roster>`
+    See the "thin_dir" setting in :ref:`Roster documentation <ssh-roster>`
     for more details.
 
 Configuring Salt SSH
@@ -157,7 +168,7 @@ the ``-c`` option to Salt SSH facilitates passing in a directory to look inside 
 configuration file named ``master``.
 
 Minion Config
----------------
+-------------
 
 .. versionadded:: 2015.5.1
 
@@ -173,7 +184,7 @@ Salt SSH with a regular user you have to modify some paths or you will get
 "Permission denied" messages. You have to modify two parameters: ``pki_dir``
 and ``cachedir``. Those should point to a full path writable for the user.
 
-It's recommed not to modify /etc/salt for this purpose. Create a private copy
+It's recommended not to modify /etc/salt for this purpose. Create a private copy
 of /etc/salt for the user and run the command with ``-c /new/config/path``.
 
 Define CLI Options with Saltfile
@@ -208,6 +219,12 @@ Boolean-style options should be specified in their YAML representation.
    be ``ssh_wipe`` and thus this is what should be configured in the
    ``Saltfile``.  Using the names of flags for this option, being ``wipe:
    True`` or ``w: True``, will not work.
+
+.. note::
+
+    For the `Saltfile` to be automatically detected it needs to be named
+    `Saltfile` with a capital `S` and be readable by the user running
+    salt-ssh.
 
 Debugging salt-ssh
 ==================

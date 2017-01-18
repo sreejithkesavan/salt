@@ -7,7 +7,7 @@ VMware Cloud Module
 
 The VMware cloud module allows you to manage VMware ESX, ESXi, and vCenter.
 
-See :doc:`Getting started with VMware </topics/cloud/vmware>` to get started.
+See :ref:`Getting started with VMware <cloud-getting-started-vmware>` to get started.
 
 :codeauthor: Nitin Madhok <nmadhok@clemson.edu>
 
@@ -135,6 +135,13 @@ from salt.exceptions import SaltCloudSystemExit
 import salt.config as config
 
 # Attempt to import pyVim and pyVmomi libs
+ESX_5_5_NAME_PORTION = 'VMware ESXi 5.5'
+SAFE_ESX_5_5_CONTROLLER_KEY_INDEX = 200
+FLATTEN_DISK_FULL_CLONE = 'moveAllDiskBackingsAndDisallowSharing'
+COPY_ALL_DISKS_FULL_CLONE = 'moveAllDiskBackingsAndAllowSharing'
+CURRENT_STATE_LINKED_CLONE = 'moveChildMostDiskBacking'
+QUICK_LINKED_CLONE = 'createNewChildDiskBacking'
+
 try:
     from pyVmomi import vim
     HAS_PYVMOMI = True
@@ -143,7 +150,7 @@ except Exception:
 
 # Disable InsecureRequestWarning generated on python > 2.6
 try:
-    from requests.packages.urllib3 import disable_warnings
+    from requests.packages.urllib3 import disable_warnings  # pylint: disable=no-name-in-module
     disable_warnings()
 except Exception:
     pass
@@ -276,6 +283,15 @@ def _edit_existing_hard_disk_helper(disk, size_kb):
     disk.capacityInKB = size_kb
     disk_spec = vim.vm.device.VirtualDeviceSpec()
     disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+    disk_spec.device = disk
+
+    return disk_spec
+
+
+def _edit_existing_hard_disk_mode_helper(disk, mode):
+    disk_spec = vim.vm.device.VirtualDeviceSpec()
+    disk_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+    disk.backing.diskMode = mode
     disk_spec.device = disk
 
     return disk_spec
@@ -483,20 +499,29 @@ def _add_new_scsi_controller_helper(scsi_controller_label, properties, bus_numbe
     return scsi_spec
 
 
-def _add_new_ide_controller_helper(ide_controller_label, properties, bus_number):
+def _add_new_ide_controller_helper(ide_controller_label, controller_key, bus_number):
     '''
     Helper function for adding new IDE controllers
 
     .. versionadded:: 2016.3.0
+
+    Args:
+      ide_controller_label: label of the IDE controller
+      controller_key: if not None, the controller key to use; otherwise it is randomly generated
+      bus_number: bus number
+
+    Returns: created device spec for an IDE controller
+
     '''
-    random_key = randint(-200, -250)
+    if controller_key is None:
+        controller_key = randint(-200, 250)
 
     ide_spec = vim.vm.device.VirtualDeviceSpec()
     ide_spec.device = vim.vm.device.VirtualIDEController()
 
     ide_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
 
-    ide_spec.device.key = random_key
+    ide_spec.device.key = controller_key
     ide_spec.device.busNumber = bus_number
     ide_spec.device.deviceInfo = vim.Description()
     ide_spec.device.deviceInfo.label = ide_controller_label
@@ -603,25 +628,51 @@ def _manage_devices(devices, vm=None, container_ref=None):
     existing_cd_drives_label = []
     ide_controllers = {}
     nics_map = []
+    cloning_from_vm = vm is not None
 
-    # this would be None when we aren't cloning a VM
-    if vm:
+    if cloning_from_vm:
         # loop through all the devices the vm/template has
         # check if the device needs to be created or configured
         for device in vm.config.hardware.device:
             if isinstance(device, vim.vm.device.VirtualDisk):
                 # this is a hard disk
                 if 'disk' in list(devices.keys()):
-                    # there is atleast one disk specified to be created/configured
+                    # there is at least one disk specified to be created/configured
                     unit_number += 1
                     existing_disks_label.append(device.deviceInfo.label)
                     if device.deviceInfo.label in list(devices['disk'].keys()):
-                        size_gb = float(devices['disk'][device.deviceInfo.label]['size'])
-                        size_kb = int(size_gb * 1024.0 * 1024.0)
+                        disk_spec = None
+                        if 'size' in devices['disk'][device.deviceInfo.label]:
+                            disk_spec = _get_size_spec(device, devices)
+                            size_kb = float(
+                                devices['disk'][device.deviceInfo.label]['size']
+                            ) * 1024 * 1024
+                        else:
+                            # User didn't specify disk size
+                            # in the cloud profile
+                            # so use the existing disk size
+                            log.info('Virtual disk size was not'
+                                     ' specified in the cloud profile.'
+                                     ' Using existing disk size.')
+                            size_kb = device.capacityInKB
+
                         if device.capacityInKB < size_kb:
                             # expand the disk
                             disk_spec = _edit_existing_hard_disk_helper(device, size_kb)
-                            device_specs.append(disk_spec)
+
+                        if 'mode' in devices['disk'][device.deviceInfo.label]:
+                            if devices['disk'][device.deviceInfo.label]['mode'] \
+                                in [
+                                    'independent_persistent',
+                                    'independent_nonpersistent',
+                                    'dependent',
+                            ]:
+                                disk_spec = _get_mode_spec(device, devices, disk_spec)
+                            else:
+                                raise SaltCloudSystemExit('Invalid disk'
+                                                          ' backing mode'
+                                                          ' specified!')
+                        device_specs.append(disk_spec)
 
             elif isinstance(device.backing, vim.vm.device.VirtualEthernetCard.NetworkBackingInfo) or isinstance(device.backing, vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo):
                 # this is a network adapter
@@ -699,11 +750,22 @@ def _manage_devices(devices, vm=None, container_ref=None):
         ide_controllers_to_create = list(set(devices['ide'].keys()) - set(existing_ide_controllers_label))
         ide_controllers_to_create.sort()
         log.debug('IDE controllers to create: {0}'.format(ide_controllers_to_create)) if ide_controllers_to_create else None  # pylint: disable=W0106
+
+        # ESX 5.5 (and possibly earlier?) set the IDE controller key themselves, indexed starting at
+        # 200. Rather than doing a create task/get vm/reconfig task dance we query the server and
+        # if it's ESX 5.5 we supply a controller starting at 200 and work out way upwards from there
+        # ESX 6 (and, one assumes, vCenter) does not display this problem and so continues to use
+        # the randomly generated indexes
+        vcenter_name = get_vcenter_version(call='function')
+        controller_index = SAFE_ESX_5_5_CONTROLLER_KEY_INDEX if ESX_5_5_NAME_PORTION in vcenter_name else None
+
         for ide_controller_label in ide_controllers_to_create:
             # create the IDE controller
-            ide_spec = _add_new_ide_controller_helper(ide_controller_label, None, bus_number)
+            ide_spec = _add_new_ide_controller_helper(ide_controller_label, controller_index, bus_number)
             device_specs.append(ide_spec)
             bus_number += 1
+            if controller_index is not None:
+                controller_index += 1
 
     if 'disk' in list(devices.keys()):
         disks_to_create = list(set(devices['disk'].keys()) - set(existing_disks_label))
@@ -768,6 +830,31 @@ def _manage_devices(devices, vm=None, container_ref=None):
     }
 
     return ret
+
+
+def _get_mode_spec(device, devices, disk_spec):
+    if device.backing.diskMode != \
+            devices['disk'][device.deviceInfo.label]['mode']:
+        if not disk_spec:
+            disk_spec = \
+                _edit_existing_hard_disk_mode_helper(
+                    device,
+                    devices['disk'][device.deviceInfo.label]['mode']
+                )
+        else:
+            disk_spec.device.backing.diskMode = \
+                devices['disk'][device.deviceInfo.label]['mode']
+    return disk_spec
+
+
+def _get_size_spec(device, devices):
+    size_gb = float(devices['disk'][device.deviceInfo.label]['size'])
+    size_kb = int(size_gb * 1024.0 * 1024.0)
+    disk_spec = None
+    if device.capacityInKB < size_kb:
+        # expand the disk
+        disk_spec = _edit_existing_hard_disk_helper(device, size_kb)
+    return disk_spec
 
 
 def _wait_for_vmware_tools(vm_ref, max_wait):
@@ -1002,7 +1089,7 @@ def _format_instance_info_select(vm, selection):
 
     if 'files' in selection:
         file_full_info = {}
-        if "layoutEx.file" in file:
+        if "layoutEx.file" in file:  # pylint: disable=E1135
             for file in vm["layoutEx.file"]:
                 file_full_info[file.key] = {
                     'key': file.key,
@@ -1425,7 +1512,7 @@ def list_nodes_min(kwargs=None, call=None):
     vm_list = salt.utils.vmware.get_mors_with_properties(_get_si(), vim.VirtualMachine, vm_properties)
 
     for vm in vm_list:
-        ret[vm["name"]] = True
+        ret[vm['name']] = {'state': 'Running', 'id': vm['name']}
 
     return ret
 
@@ -2095,11 +2182,12 @@ def destroy(name, call=None):
             '-a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -2143,15 +2231,16 @@ def destroy(name, call=None):
                 )
                 return 'failed to destroy'
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
 
     return True
 
@@ -2184,15 +2273,16 @@ def create(vm_):
     if 'provider' in vm_:
         vm_['driver'] = vm_.pop('provider')
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -2272,12 +2362,14 @@ def create(vm_):
         'win_user_fullname', vm_, __opts__, search_global=False, default='Windows User'
     )
 
+    container_ref = None
+
+    # If datacenter is specified, set the container reference to start search from it instead
+    if datacenter:
+        datacenter_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.Datacenter, datacenter)
+        container_ref = datacenter_ref if datacenter_ref else None
+
     if 'clonefrom' in vm_:
-        # If datacenter is specified, set the container reference to start search from it instead
-        container_ref = None
-        if datacenter:
-            datacenter_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.Datacenter, datacenter)
-            container_ref = datacenter_ref if datacenter_ref else None
 
         # Clone VM/template from specified VM/template
         object_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.VirtualMachine, vm_['clonefrom'], container_ref=container_ref)
@@ -2379,12 +2471,17 @@ def create(vm_):
             if not datastore_ref:
                 raise SaltCloudSystemExit("Specified datastore: '{0}' does not exist".format(datastore))
 
+        if host:
+            host_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.HostSystem, host, container_ref=container_ref)
+            if not host_ref:
+                log.error("Specified host: '{0}' does not exist".format(host))
+
     # Create the config specs
     config_spec = vim.vm.ConfigSpec()
 
     # If the hardware version is specified and if it is different from the current
     # hardware version, then schedule a hardware version upgrade
-    if hardware_version:
+    if hardware_version and object_ref is not None:
         hardware_version = "vmx-{0}".format(str(hardware_version).zfill(2))
         if hardware_version != object_ref.config.version:
             log.debug("Scheduling hardware version upgrade from {0} to {1}".format(object_ref.config.version, hardware_version))
@@ -2429,12 +2526,18 @@ def create(vm_):
             config_spec.extraConfig.append(option)
 
     if 'clonefrom' in vm_:
-        # Create the clone specs
-        clone_spec = vim.vm.CloneSpec(
-            template=template,
-            location=reloc_spec,
-            config=config_spec
+        clone_spec = handle_snapshot(
+            config_spec,
+            object_ref,
+            reloc_spec,
+            template,
+            vm_
         )
+        if not clone_spec:
+            clone_spec = build_clonespec(config_spec,
+                                         object_ref,
+                                         reloc_spec,
+                                         template)
 
         if customization and (devices and 'network' in list(devices.keys())):
             global_ip = vim.vm.customization.GlobalIPSettings()
@@ -2485,11 +2588,12 @@ def create(vm_):
         )
 
     try:
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'requesting instance',
             'salt/cloud/{0}/requesting'.format(vm_['name']),
-            {'kwargs': vm_},
+            args={'kwargs': vm_},
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
 
@@ -2525,8 +2629,11 @@ def create(vm_):
         else:
             log.info('Creating {0}'.format(vm_['name']))
 
-            task = folder_ref.CreateVM_Task(config_spec, resourcepool_ref)
-            salt.utils.vmware.wait_for_task(task, vm_name, "create", 5, 'info')
+            if host:
+                task = folder_ref.CreateVM_Task(config_spec, resourcepool_ref, host_ref)
+            else:
+                task = folder_ref.CreateVM_Task(config_spec, resourcepool_ref)
+            salt.utils.vmware.wait_for_task(task, vm_name, "create", 15, 'info')
     except Exception as exc:
         err_msg = 'Error creating {0}: {1}'.format(vm_['name'], exc)
         log.error(
@@ -2539,9 +2646,13 @@ def create(vm_):
     new_vm_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.VirtualMachine, vm_name, container_ref=container_ref)
 
     # Find how to power on in CreateVM_Task (if possible), for now this will do
-    if not clone_type and power:
-        task = new_vm_ref.PowerOn()
-        salt.utils.vmware.wait_for_task(task, vm_name, 'power', 5, 'info')
+    try:
+        if not clone_type and power:
+            task = new_vm_ref.PowerOn()
+            salt.utils.vmware.wait_for_task(task, vm_name, 'power', 5, 'info')
+    except Exception as exc:
+        log.info('Powering on the VM threw this exception. Ignoring.')
+        log.info(exc)
 
     # If it a template or if it does not need to be powered on then do not wait for the IP
     out = None
@@ -2563,18 +2674,88 @@ def create(vm_):
     if deploy and out is not None:
         data['deploy_kwargs'] = out['deploy_kwargs']
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
     return data
+
+
+def handle_snapshot(config_spec, object_ref, reloc_spec, template, vm_):
+    '''
+    Returns a clone spec for cloning from shapshots
+    :rtype vim.vm.CloneSpec
+    '''
+    if 'snapshot' not in vm_:
+        return None
+
+    allowed_types = [
+        FLATTEN_DISK_FULL_CLONE,
+        COPY_ALL_DISKS_FULL_CLONE,
+        CURRENT_STATE_LINKED_CLONE,
+        QUICK_LINKED_CLONE,
+    ]
+
+    clone_spec = get_clonespec_for_valid_snapshot(
+        config_spec,
+        object_ref,
+        reloc_spec,
+        template,
+        vm_)
+    if not clone_spec:
+        raise SaltCloudSystemExit('Invalid disk move type specified'
+                                  ' supported types are'
+                                  ' {0}'.format(' '.join(allowed_types)))
+    return clone_spec
+
+
+def get_clonespec_for_valid_snapshot(config_spec, object_ref, reloc_spec, template, vm_):
+    '''
+    return clonespec only if values are valid
+    '''
+    moving = True
+    if QUICK_LINKED_CLONE == vm_['snapshot']['disk_move_type']:
+        reloc_spec.diskMoveType = QUICK_LINKED_CLONE
+    elif CURRENT_STATE_LINKED_CLONE == vm_['snapshot']['disk_move_type']:
+        reloc_spec.diskMoveType = CURRENT_STATE_LINKED_CLONE
+    elif COPY_ALL_DISKS_FULL_CLONE == vm_['snapshot']['disk_move_type']:
+        reloc_spec.diskMoveType = COPY_ALL_DISKS_FULL_CLONE
+    elif FLATTEN_DISK_FULL_CLONE == vm_['snapshot']['disk_move_type']:
+        reloc_spec.diskMoveType = FLATTEN_DISK_FULL_CLONE
+    else:
+        moving = False
+
+    if moving:
+        return build_clonespec(config_spec, object_ref, reloc_spec, template)
+    else:
+        return None
+
+
+def build_clonespec(config_spec, object_ref, reloc_spec, template):
+    '''
+    Returns the clone spec
+    '''
+    if reloc_spec.diskMoveType == QUICK_LINKED_CLONE:
+        return vim.vm.CloneSpec(
+            template=template,
+            location=reloc_spec,
+            config=config_spec,
+            snapshot=object_ref.snapshot.currentSnapshot
+        )
+    else:
+        return vim.vm.CloneSpec(
+            template=template,
+            location=reloc_spec,
+            config=config_spec
+        )
 
 
 def create_datacenter(kwargs=None, call=None):
@@ -3323,6 +3504,29 @@ def create_snapshot(name, kwargs=None, call=None):
                                                             vm_ref.snapshot.currentSnapshot)}
 
 
+def _get_snapshot_ref_helper(base_snapshot, snapshot_name):
+    if base_snapshot.name == snapshot_name:
+        return base_snapshot
+    else:
+        for snapshot in base_snapshot.childSnapshotList:
+            snapshot_ref = _get_snapshot_ref_helper(snapshot, snapshot_name)
+            if snapshot_ref is not None:
+                return snapshot_ref
+
+
+def _get_snapshot_ref_by_name(vm_ref, snapshot_name):
+    snapshot_ref = None
+    try:
+        for root_snapshot in vm_ref.snapshot.rootSnapshotList:
+            snapshot_ref = _get_snapshot_ref_helper(root_snapshot, snapshot_name)
+            if snapshot_ref is not None:
+                break
+    except (IndexError, AttributeError):
+        snapshot_ref = None
+
+    return snapshot_ref
+
+
 def revert_to_snapshot(name, kwargs=None, call=None):
     '''
     Revert virtual machine to it's current snapshot. If no snapshot
@@ -3345,6 +3549,7 @@ def revert_to_snapshot(name, kwargs=None, call=None):
     .. code-block:: bash
 
         salt-cloud -a revert_to_snapshot vmame [power_off=True]
+        salt-cloud -a revert_to_snapshot vmame snapshot_name="selectedSnapshot" [power_off=True]
     '''
     if call != 'action':
         raise SaltCloudSystemExit(
@@ -3355,6 +3560,8 @@ def revert_to_snapshot(name, kwargs=None, call=None):
     if kwargs is None:
         kwargs = {}
 
+    snapshot_name = kwargs.get('snapshot_name') if kwargs and 'snapshot_name' in kwargs else None
+
     suppress_power_on = _str_to_bool(kwargs.get('power_off', False))
 
     vm_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.VirtualMachine, name)
@@ -3363,8 +3570,20 @@ def revert_to_snapshot(name, kwargs=None, call=None):
         log.error('VM {0} does not contain any current snapshots'.format(name))
         return 'revert failed'
 
+    msg = "reverted to current snapshot"
+
     try:
-        task = vm_ref.RevertToCurrentSnapshot(suppressPowerOn=suppress_power_on)
+        if snapshot_name is None:
+            log.debug("Reverting VM {0} to current snapshot".format(name))
+            task = vm_ref.RevertToCurrentSnapshot(suppressPowerOn=suppress_power_on)
+        else:
+            log.debug("Reverting VM {0} to snapshot {1}".format(name, snapshot_name))
+            msg = "reverted to snapshot {0}".format(snapshot_name)
+            snapshot_ref = _get_snapshot_ref_by_name(vm_ref, snapshot_name)
+            if snapshot_ref is None:
+                return 'specified snapshot \'{0}\' does not exist'.format(snapshot_name)
+            task = snapshot_ref.snapshot.Revert(suppressPowerOn=suppress_power_on)
+
         salt.utils.vmware.wait_for_task(task, name, 'revert to snapshot', 5, 'info')
 
     except Exception as exc:
@@ -3378,7 +3597,7 @@ def revert_to_snapshot(name, kwargs=None, call=None):
         )
         return 'revert failed'
 
-    return 'reverted to current snapshot'
+    return msg
 
 
 def remove_all_snapshots(name, kwargs=None, call=None):
@@ -3603,12 +3822,12 @@ def remove_host(kwargs=None, call=None):
         )
 
     try:
-        if isinstance(host_ref.parent, vim.ComputeResource):
-            # This is a standalone host system
-            task = host_ref.parent.Destroy_Task()
-        else:
+        if isinstance(host_ref.parent, vim.ClusterComputeResource):
             # This is a host system that is part of a Cluster
             task = host_ref.Destroy_Task()
+        else:
+            # This is a standalone host system
+            task = host_ref.parent.Destroy_Task()
         salt.utils.vmware.wait_for_task(task, host_name, 'remove host', log_level='info')
     except Exception as exc:
         log.error(

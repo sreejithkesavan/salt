@@ -4,40 +4,6 @@
 Requisites and Other Global State Arguments
 ===========================================
 
-.. _requisites-fire-event:
-
-Fire Event Notifications
-========================
-
-.. versionadded:: 2015.8.0
-
-The `fire_event` option in a state will cause the minion to send an event to
-the Salt Master upon completion of that individual state.
-
-The following example will cause the minion to send an event to the Salt Master
-with a tag of `salt/state_result/20150505121517276431/dasalt/nano` and the
-result of the state will be the data field of the event. Notice that the `name`
-of the state gets added to the tag.
-
-.. code-block:: yaml
-
-    nano_stuff:
-      pkg.installed:
-        - name: nano
-        - fire_event: True
-
-In the following example instead of setting `fire_event` to `True`,
-`fire_event` is set to an arbitrary string, which will cause the event to be
-sent with this tag:
-`salt/state_result/20150505121725642845/dasalt/custom/tag/nano/finished`
-
-.. code-block:: yaml
-
-    nano_stuff:
-      pkg.installed:
-        - name: nano
-        - fire_event: custom/tag/nano/finished
-
 Requisites
 ==========
 
@@ -207,15 +173,15 @@ dependency logic defined above.
 require
 ~~~~~~~
 
-The use of ``require`` demands that the dependent state executes before the
-depending state. The state containing the ``require`` requisite is defined as the
-depending state. The state specified in the ``require`` statement is defined as the
-dependent state. If the dependent state's execution succeeds, the depending state
-will then execute. If the dependent state's execution fails, the depending state
+The use of ``require`` demands that the required state executes before the
+dependent state. The state containing the ``require`` requisite is defined as the
+dependent state. The state specified in the ``require`` statement is defined as the
+required state. If the required state's execution succeeds, the dependent state
+will then execute. If the required state's execution fails, the dependent state
 will not execute. In the first example above, the file ``/etc/vimrc`` will only
 execute after the vim package is installed successfully.
 
-Require an entire sls file
+Require an Entire SLS File
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 As of Salt 0.16.0, it is possible to require an entire sls file. Do this first by
@@ -230,6 +196,10 @@ including the sls file and then setting a state to ``require`` the included sls 
       pkg.installed:
         - require:
           - sls: foo
+
+This will add all of the state declarations found in the given sls file. This means
+that every state in sls `foo` will be required. This makes it very easy to batch
+large groups of states easily in any requisite statement.
 
 .. _requisites-watch:
 
@@ -371,6 +341,8 @@ expects to deploy fresh code via the file.recurse call. The site-code
 deployment will only be executed if the graceful-down run completes
 successfully.
 
+.. _requisites-onfail:
+
 onfail
 ~~~~~~
 
@@ -401,11 +373,13 @@ The ``onfail`` requisite is applied in the same way as ``require`` as ``watch``:
 
 .. note::
 
-    Beginning in the ``Carbon`` release of Salt, ``onfail`` uses OR logic for
-    multiple listed ``onfail`` requisites. Prior to the ``Carbon`` release,
+    Beginning in the ``2016.11.0`` release of Salt, ``onfail`` uses OR logic for
+    multiple listed ``onfail`` requisites. Prior to the ``2016.11.0`` release,
     ``onfail`` used AND logic. See `Issue #22370`_ for more information.
 
 .. _Issue #22370: https://github.com/saltstack/salt/issues/22370
+
+.. _requisites-onchanges:
 
 onchanges
 ~~~~~~~~~
@@ -418,6 +392,51 @@ a useful way to execute a post hook after changing aspects of a system.
 
 If a state has multiple ``onchanges`` requisites then the state will trigger
 if any of the watched states changes.
+
+.. note::
+    One easy-to-make mistake is to use ``onchanges_in`` when ``onchanges`` is
+    supposed to be used. For example, the below configuration is not correct:
+
+    .. code-block:: yaml
+
+        myservice:
+          pkg.installed:
+            - name: myservice
+          file.managed:
+            - name: /etc/myservice/myservice.conf
+            - source: salt://myservice/files/myservice.conf
+            - mode: 600
+          cmd.run:
+            - name: /usr/libexec/myservice/post-changes-hook.sh
+            - onchanges_in:
+              - file: /etc/myservice/myservice.conf
+
+    This will set up a requisite relationship in which the ``cmd.run`` state
+    always executes, and the ``file.managed`` state only executes if the
+    ``cmd.run`` state has changes (which it always will, since the ``cmd.run``
+    state includes the command results as changes).
+
+    It may semantically seem like the the ``cmd.run`` state should only run
+    when there are changes in the file state, but remember that requisite
+    relationships involve one state watching another state, and a
+    :ref:`requisite_in <requisites-onchanges-in>` does the opposite: it forces
+    the specified state to watch the state with the ``requisite_in``.
+
+    The correct usage would be:
+
+    .. code-block:: yaml
+
+        myservice:
+          pkg.installed:
+            - name: myservice
+          file.managed:
+            - name: /etc/myservice/myservice.conf
+            - source: salt://myservice/files/myservice.conf
+            - mode: 600
+          cmd.run:
+            - name: /usr/libexec/myservice/post-changes-hook.sh
+            - onchanges:
+              - file: /etc/myservice/myservice.conf
 
 use
 ~~~
@@ -453,6 +472,7 @@ inherit inherited options.
 
 .. _requisites-require-in:
 .. _requisites-watch-in:
+.. _requisites-onchanges-in:
 
 The _in versions of requisites
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -533,6 +553,40 @@ Now the httpd server will only start if php or mod_python are first verified to
 be installed. Thus allowing for a requisite to be defined "after the fact".
 
 
+.. _requisites-fire-event:
+
+Fire Event Notifications
+========================
+
+.. versionadded:: 2015.8.0
+
+The `fire_event` option in a state will cause the minion to send an event to
+the Salt Master upon completion of that individual state.
+
+The following example will cause the minion to send an event to the Salt Master
+with a tag of `salt/state_result/20150505121517276431/dasalt/nano` and the
+result of the state will be the data field of the event. Notice that the `name`
+of the state gets added to the tag.
+
+.. code-block:: yaml
+
+    nano_stuff:
+      pkg.installed:
+        - name: nano
+        - fire_event: True
+
+In the following example instead of setting `fire_event` to `True`,
+`fire_event` is set to an arbitrary string, which will cause the event to be
+sent with this tag:
+`salt/state_result/20150505121725642845/dasalt/custom/tag/nano/finished`
+
+.. code-block:: yaml
+
+    nano_stuff:
+      pkg.installed:
+        - name: nano
+        - fire_event: custom/tag/nano/finished
+
 Altering States
 ===============
 
@@ -547,7 +601,10 @@ Reload
 ------
 
 ``reload_modules`` is a boolean option that forces salt to reload its modules
-after a state finishes. See :ref:`Reloading Modules <reloading-modules>`.
+after a state finishes. ``reload_pillar`` and ``reload_grains`` can also be set.
+See :ref:`Reloading Modules <reloading-modules>`.
+
+.. _unless-requisite:
 
 Unless
 ------
@@ -596,6 +653,8 @@ For example:
 
 In the above case, ``some_check`` will be run prior to _each_ name -- once for
 ``first_deploy_cmd`` and a second time for ``second_deploy_cmd``.
+
+.. _onlyif-requisite:
 
 Onlyif
 ------

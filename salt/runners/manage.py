@@ -34,7 +34,31 @@ FINGERPRINT_REGEX = re.compile(r'^([a-f0-9]{2}:){15}([a-f0-9]{2})$')
 log = logging.getLogger(__name__)
 
 
-def status(output=True):
+def _ping(tgt, expr_form, timeout):
+    client = salt.client.get_local_client(__opts__['conf_file'])
+    pub_data = client.run_job(tgt, 'test.ping', (), expr_form, '', timeout, '')
+
+    if not pub_data:
+        return pub_data
+
+    returned = set()
+    for fn_ret in client.get_cli_event_returns(
+            pub_data['jid'],
+            pub_data['minions'],
+            client._get_timeout(timeout),
+            tgt,
+            expr_form):
+
+        if fn_ret:
+            for mid, _ in six.iteritems(fn_ret):
+                returned.add(mid)
+
+    not_returned = set(pub_data['minions']) - returned
+
+    return list(returned), list(not_returned)
+
+
+def status(output=True, tgt='*', expr_form='glob'):
     '''
     Print the status of all known salt minions
 
@@ -43,19 +67,10 @@ def status(output=True):
     .. code-block:: bash
 
         salt-run manage.status
+        salt-run manage.status tgt="webservers" expr_form="nodegroup"
     '''
     ret = {}
-    client = salt.client.get_local_client(__opts__['conf_file'])
-    try:
-        minions = client.cmd('*', 'test.ping', timeout=__opts__['timeout'])
-    except SaltClientError as client_error:
-        print(client_error)
-        return ret
-
-    key = salt.key.Key(__opts__)
-    keys = key.list_keys()
-    ret['up'] = sorted(minions)
-    ret['down'] = sorted(set(keys['minions']) - set(minions))
+    ret['up'], ret['down'] = _ping(tgt, expr_form, __opts__['timeout'])
     return ret
 
 
@@ -111,7 +126,7 @@ def key_regen():
     return msg
 
 
-def down(removekeys=False):
+def down(removekeys=False, tgt='*', expr_form='glob'):
     '''
     Print a list of all the down or unresponsive salt minions
     Optionally remove keys of down minions
@@ -122,8 +137,10 @@ def down(removekeys=False):
 
         salt-run manage.down
         salt-run manage.down removekeys=True
+        salt-run manage.down tgt="webservers" expr_form="nodegroup"
+
     '''
-    ret = status(output=False).get('down', [])
+    ret = status(output=False, tgt=tgt, expr_form=expr_form).get('down', [])
     for minion in ret:
         if removekeys:
             wheel = salt.wheel.Wheel(__opts__)
@@ -131,7 +148,7 @@ def down(removekeys=False):
     return ret
 
 
-def up():  # pylint: disable=C0103
+def up(tgt='*', expr_form='glob'):  # pylint: disable=C0103
     '''
     Print a list of all of the minions that are up
 
@@ -140,8 +157,9 @@ def up():  # pylint: disable=C0103
     .. code-block:: bash
 
         salt-run manage.up
+        salt-run manage.up tgt="webservers" expr_form="nodegroup"
     '''
-    ret = status(output=False).get('up', [])
+    ret = status(output=False, tgt=tgt, expr_form=expr_form).get('up', [])
     return ret
 
 
@@ -640,17 +658,17 @@ def bootstrap(version='develop',
         hosts need to exist in the specified roster.
 
     root_user : False
-        Prepend ``root@`` to each host. Default changed in Salt Carbon from ``True``
+        Prepend ``root@`` to each host. Default changed in Salt 2016.11.0 from ``True``
         to ``False``.
 
-        .. versionchanged:: Carbon
+        .. versionchanged:: 2016.11.0
 
-        .. deprecated:: Oxygen
+        .. deprecated:: 2016.11.0
 
     script_args
         Any additional arguments that you want to pass to the script.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     roster : flat
         The roster to use for Salt SSH. More information about roster files can
@@ -659,41 +677,41 @@ def bootstrap(version='develop',
         A full list of roster types, see the :ref:`builtin roster modules <all-salt.roster>`
         documentation.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     ssh_user
         If ``user`` isn't found in the ``roster``, a default SSH user can be set here.
         Keep in mind that ``ssh_user`` will not override the roster ``user`` value if
         it is already defined.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     ssh_password
         If ``passwd`` isn't found in the ``roster``, a default SSH password can be set
         here. Keep in mind that ``ssh_password`` will not override the roster ``passwd``
         value if it is already defined.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     ssh_privkey
         If ``priv`` isn't found in the ``roster``, a default SSH private key can be set
         here. Keep in mind that ``ssh_password`` will not override the roster ``passwd``
         value if it is already defined.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     tmp_dir : /tmp/.bootstrap
         The temporary directory to download the bootstrap script in. This
         directory will have ``-<uuid4>`` appended to it. For example:
         ``/tmp/.bootstrap-a19a728e-d40a-4801-aba9-d00655c143a7/``
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     http_backend : tornado
         The backend library to use to download the script. If you need to use
         a ``file:///`` URL, then you should set this to ``urllib2``.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
 
     CLI Example:
@@ -709,7 +727,7 @@ def bootstrap(version='develop',
 
     '''
     dep_warning = (
-        'Starting with Salt Carbon, manage.bootstrap now uses Salt SSH to '
+        'Starting with Salt 2016.11.0, manage.bootstrap now uses Salt SSH to '
         'connect, and requires a roster entry. Please ensure that a roster '
         'entry exists for this host. Non-roster hosts will no longer be '
         'supported starting with Salt Oxygen.'
@@ -758,15 +776,15 @@ def bootstrap(version='develop',
             salt.client.ssh.SSH(client_opts).run()
         except SaltSystemExit as exc:
             if 'No hosts found with target' in str(exc):
-                log.warn('The host {0} was not found in the Salt SSH roster '
-                         'system. Attempting to log in without Salt SSH.')
+                log.warning('The host {0} was not found in the Salt SSH roster '
+                            'system. Attempting to log in without Salt SSH.')
                 salt.utils.warn_until('Oxygen', dep_warning)
                 ret = subprocess.call([
                     'ssh',
                     ('root@' if root_user else '') + host,
                     'python -c \'import urllib; '
                     'print urllib.urlopen('
-                    '\'' + script + '\''
+                    '"' + script + '"'
                     ').read()\' | sh -s -- git ' + version
                 ])
                 return ret

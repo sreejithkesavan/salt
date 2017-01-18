@@ -150,6 +150,8 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         '''
         test salt grain matcher
         '''
+        # Sync grains
+        self.run_salt('-t1 "*" saltutil.sync_grains')
         # First-level grain (string value)
         data = self.run_salt('-t 1 -G "test_grain:cheese" test.ping')
         data = '\n'.join(data)
@@ -159,6 +161,11 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         data = '\n'.join(data)
         self.assertIn('sub_minion', data)
         self.assertNotIn('minion', data.replace('sub_minion', 'stub'))
+        # Custom grain
+        data = self.run_salt('-t 1 -G "match:maker" test.ping')
+        data = '\n'.join(data)
+        self.assertIn('minion', data)
+        self.assertIn('sub_minion', data)
         # First-level grain (list member)
         data = self.run_salt('-t 1 -G "planets:earth" test.ping')
         data = '\n'.join(data)
@@ -200,6 +207,21 @@ class MatchTest(integration.ShellCase, integration.ShellCaseCommonTestsMixIn):
         data = '\n'.join(data)
         self.assertIn('sub_minion', data)
         self.assertNotIn('minion', data.replace('sub_minion', 'stub'))
+        # Test for issue: https://github.com/saltstack/salt/issues/19651
+        data = self.run_salt('-G "companions:*:susan" test.ping')
+        data = '\n'.join(data)
+        self.assertIn('minion:', data)
+        self.assertNotIn('sub_minion', data)
+        # Test to ensure wildcard at end works correctly
+        data = self.run_salt('-G "companions:one:*" test.ping')
+        data = '\n'.join(data)
+        self.assertIn('minion:', data)
+        self.assertNotIn('sub_minion', data)
+        # Test to ensure multiple wildcards works correctly
+        data = self.run_salt('-G "companions:*:*" test.ping')
+        data = '\n'.join(data)
+        self.assertIn('minion:', data)
+        self.assertIn('sub_minion', data)
 
     def test_regrain(self):
         '''

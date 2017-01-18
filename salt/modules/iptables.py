@@ -80,7 +80,7 @@ def _conf(family='ipv4'):
             return '/var/lib/ip6tables/rules-save'
         else:
             return '/var/lib/iptables/rules-save'
-    elif __grains__['os_family'] == 'Suse':
+    elif __grains__['os_family'] == 'SUSE':
         # SuSE does not seem to use separate files for IPv4 and IPv6
         return '/etc/sysconfig/scripts/SuSEfirewall2-custom'
     else:
@@ -194,22 +194,12 @@ def build_rule(table='filter', chain=None, command=None, position='', full=None,
         rule.append('{0}-o {1}'.format(maybe_add_negation('of'), kwargs['of']))
         del kwargs['of']
 
-    if 'protocol' in kwargs:
-        proto = kwargs['protocol']
-        proto_negation = maybe_add_negation('protocol')
-        del kwargs['protocol']
-    elif 'proto' in kwargs:
-        proto = kwargs['proto']
-        proto_negation = maybe_add_negation('proto')
-        del kwargs['proto']
-
-    if proto:
-        if proto.startswith('!') or proto.startswith('not'):
-            proto = re.sub(bang_not_pat, '', proto)
-            rule += '! '
-
-        rule.append('{0}-p {1}'.format(proto_negation, proto))
-        proto = True
+    for proto_arg in ('protocol', 'proto'):
+        if proto_arg in kwargs:
+            if not proto:
+                rule.append('{0}-p {1}'.format(maybe_add_negation(proto_arg), kwargs[proto_arg]))
+                proto = True
+            del kwargs[proto_arg]
 
     if 'match' in kwargs:
         match_value = kwargs['match']
@@ -415,7 +405,9 @@ def build_rule(table='filter', chain=None, command=None, position='', full=None,
     for after_jump_argument in after_jump_arguments:
         if after_jump_argument in kwargs:
             value = kwargs[after_jump_argument]
-            if any(ws_char in str(value) for ws_char in string.whitespace):
+            if value in (None, ''):  # options without arguments
+                after_jump.append('--{0}'.format(after_jump_argument))
+            elif any(ws_char in str(value) for ws_char in string.whitespace):
                 after_jump.append('--{0} "{1}"'.format(after_jump_argument, value))
             else:
                 after_jump.append('--{0} {1}'.format(after_jump_argument, value))
@@ -803,7 +795,7 @@ def insert(table='filter', chain=None, position=None, rule=None, family='ipv4'):
         return 'Error: Rule needs to be specified'
 
     if position < 0:
-        rules = get_rules(family='ipv4')
+        rules = get_rules(family=family)
         size = len(rules[table][chain]['rules'])
         position = (size + position) + 1
         if position is 0:

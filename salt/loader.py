@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 '''
-We wanna be free to ride our machines without being hassled by The Man!
-And we wanna get loaded!
-And we wanna have a good time!
-And that's what we are gonna do. We are gonna have a good time...
+The Salt loader is the core to Salt's plugin system, the loader scans
+directories for python loadable code and organizes the code into the
+plugin interfaces used by Salt.
 '''
 
 # Import python libs
@@ -24,6 +23,7 @@ from zipimport import zipimporter
 from salt.exceptions import LoaderError
 from salt.template import check_render_pipe_str
 from salt.utils.decorators import Depends
+from salt.utils import is_proxy
 import salt.utils.context
 import salt.utils.lazy
 import salt.utils.event
@@ -121,12 +121,14 @@ def static_loader(
 def _module_dirs(
         opts,
         ext_type,
-        tag,
+        tag=None,
         int_type=None,
         ext_dirs=True,
         ext_type_dirs=None,
         base_path=None,
         ):
+    if tag is None:
+        tag = ext_type
     sys_types = os.path.join(base_path or SALT_BASE_PATH, int_type or ext_type)
     ext_types = os.path.join(opts['extension_modules'], ext_type)
 
@@ -163,7 +165,6 @@ def minion_mods(
         context=None,
         utils=None,
         whitelist=None,
-        include_errors=False,
         initial_load=False,
         loaded_base_name=None,
         notify=False,
@@ -186,7 +187,6 @@ def minion_mods(
                             configuration.
 
     :param list whitelist: A list of modules which should be whitelisted.
-    :param bool include_errors: Deprecated flag! Unused.
     :param bool initial_load: Deprecated flag! Unused.
     :param str loaded_base_name: A string marker for the loaded base name.
     :param bool notify: Flag indicating that an event should be fired upon
@@ -200,7 +200,8 @@ def minion_mods(
         __opts__ = salt.config.minion_config('/etc/salt/minion')
         __grains__ = salt.loader.grains(__opts__)
         __opts__['grains'] = __grains__
-        __salt__ = salt.loader.minion_mods(__opts__)
+        __utils__ = salt.loader.utils(__opts__)
+        __salt__ = salt.loader.minion_mods(__opts__, utils=__utils__)
         __salt__['test.ping']()
     '''
     # TODO Publish documentation for module whitelisting
@@ -271,14 +272,15 @@ def raw_mod(opts, name, functions, mod='modules'):
     return dict(loader._dict)  # return a copy of *just* the funcs for `name`
 
 
-def engines(opts, functions, runners):
+def engines(opts, functions, runners, proxy=None):
     '''
     Return the master services plugins
     '''
     pack = {'__salt__': functions,
-            '__runners__': runners}
+            '__runners__': runners,
+            '__proxy__': proxy}
     return LazyLoader(
-        _module_dirs(opts, 'engines', 'engines'),
+        _module_dirs(opts, 'engines'),
         opts,
         tag='engines',
         pack=pack,
@@ -290,7 +292,7 @@ def proxy(opts, functions=None, returners=None, whitelist=None):
     Returns the proxy module for this salt-proxy-minion
     '''
     ret = LazyLoader(
-        _module_dirs(opts, 'proxy', 'proxy'),
+        _module_dirs(opts, 'proxy'),
         opts,
         tag='proxy',
         pack={'__salt__': functions, '__ret__': returners},
@@ -319,7 +321,7 @@ def utils(opts, whitelist=None, context=None):
     Returns the utility modules
     '''
     return LazyLoader(
-        _module_dirs(opts, 'utils', 'utils', ext_type_dirs='utils_dirs'),
+        _module_dirs(opts, 'utils', ext_type_dirs='utils_dirs'),
         opts,
         tag='utils',
         whitelist=whitelist,
@@ -331,12 +333,12 @@ def pillars(opts, functions, context=None):
     '''
     Returns the pillars modules
     '''
-    ret = LazyLoader(
-        _module_dirs(opts, 'pillar', 'pillar'),
-        opts,
-        tag='pillar',
-        pack={'__salt__': functions, '__context__': context},
-    )
+    ret = LazyLoader(_module_dirs(opts, 'pillar'),
+                     opts,
+                     tag='pillar',
+                     pack={'__salt__': functions,
+                           '__context__': context,
+                           '__utils__': utils(opts)})
     ret.pack['__ext_pillar__'] = ret
     return FilterDictWrapper(ret, '.ext_pillar')
 
@@ -362,7 +364,7 @@ def wheels(opts, whitelist=None):
     Returns the wheels modules
     '''
     return LazyLoader(
-        _module_dirs(opts, 'wheel', 'wheel'),
+        _module_dirs(opts, 'wheel'),
         opts,
         tag='wheel',
         whitelist=whitelist,
@@ -377,7 +379,7 @@ def outputters(opts):
     :returns: LazyLoader instance, with only outputters present in the keyspace
     '''
     ret = LazyLoader(
-        _module_dirs(opts, 'output', 'output', ext_type_dirs='outputter_dirs'),
+        _module_dirs(opts, 'output', ext_type_dirs='outputter_dirs'),
         opts,
         tag='output',
     )
@@ -394,7 +396,7 @@ def serializers(opts):
     :returns: LazyLoader instance, with only serializers present in the keyspace
     '''
     return LazyLoader(
-        _module_dirs(opts, 'serializers', 'serializers'),
+        _module_dirs(opts, 'serializers'),
         opts,
         tag='serializers',
     )
@@ -408,7 +410,7 @@ def auth(opts, whitelist=None):
     :returns: LazyLoader
     '''
     return LazyLoader(
-        _module_dirs(opts, 'auth', 'auth'),
+        _module_dirs(opts, 'auth'),
         opts,
         tag='auth',
         whitelist=whitelist,
@@ -420,12 +422,11 @@ def fileserver(opts, backends):
     '''
     Returns the file server modules
     '''
-    return LazyLoader(
-        _module_dirs(opts, 'fileserver', 'fileserver'),
-        opts,
-        tag='fileserver',
-        whitelist=backends,
-    )
+    return LazyLoader(_module_dirs(opts, 'fileserver'),
+                      opts,
+                      tag='fileserver',
+                      whitelist=backends,
+                      pack={'__utils__': utils(opts)})
 
 
 def roster(opts, whitelist=None):
@@ -433,7 +434,7 @@ def roster(opts, whitelist=None):
     Returns the roster modules
     '''
     return LazyLoader(
-        _module_dirs(opts, 'roster', 'roster'),
+        _module_dirs(opts, 'roster'),
         opts,
         tag='roster',
         whitelist=whitelist,
@@ -445,7 +446,7 @@ def thorium(opts, functions, runners):
     Load the thorium runtime modules
     '''
     pack = {'__salt__': functions, '__runner__': runners, '__context__': {}}
-    ret = LazyLoader(_module_dirs(opts, 'thorium', 'thorium'),
+    ret = LazyLoader(_module_dirs(opts, 'thorium'),
             opts,
             tag='thorium',
             pack=pack)
@@ -470,7 +471,7 @@ def states(opts, functions, utils, serializers, whitelist=None):
         statemods = salt.loader.states(__opts__, None, None)
     '''
     ret = LazyLoader(
-        _module_dirs(opts, 'states', 'states'),
+        _module_dirs(opts, 'states'),
         opts,
         tag='states',
         pack={'__salt__': functions},
@@ -491,10 +492,11 @@ def beacons(opts, functions, context=None):
                             keys and funcs as values.
     '''
     return LazyLoader(
-        _module_dirs(opts, 'beacons', 'beacons'),
+        _module_dirs(opts, 'beacons'),
         opts,
         tag='beacons',
         pack={'__context__': context, '__salt__': functions},
+        virtual_funcs=['__validate__'],
     )
 
 
@@ -517,7 +519,7 @@ def search(opts, returners, whitelist=None):
     )
 
 
-def log_handlers(opts, functions=None, grains=None):
+def log_handlers(opts):
     '''
     Returns the custom logging handler modules
 
@@ -527,13 +529,11 @@ def log_handlers(opts, functions=None, grains=None):
         _module_dirs(
             opts,
             'log_handlers',
-            'log_handlers',
             int_type='handlers',
             base_path=os.path.join(SALT_BASE_PATH, 'log'),
         ),
         opts,
         tag='log_handlers',
-        pack={'__salt__': functions, '__grains__': grains}
     )
     return FilterDictWrapper(ret, '.setup_handlers')
 
@@ -546,12 +546,16 @@ def ssh_wrapper(opts, functions=None, context=None):
         _module_dirs(
             opts,
             'wrapper',
-            'wrapper',
             base_path=os.path.join(SALT_BASE_PATH, os.path.join('client', 'ssh')),
         ),
         opts,
         tag='wrapper',
-        pack={'__salt__': functions, '__context__': context},
+        pack={
+            '__salt__': functions,
+            '__grains__': opts.get('grains', {}),
+            '__pillar__': opts.get('pillar', {}),
+            '__context__': context,
+            },
     )
 
 
@@ -559,7 +563,8 @@ def render(opts, functions, states=None):
     '''
     Returns the render modules
     '''
-    pack = {'__salt__': functions}
+    pack = {'__salt__': functions,
+            '__grains__': opts.get('grains', {})}
     if states:
         pack['__states__'] = states
     ret = LazyLoader(
@@ -575,7 +580,7 @@ def render(opts, functions, states=None):
     )
     rend = FilterDictWrapper(ret, '.render')
 
-    if not check_render_pipe_str(opts['renderer'], rend):
+    if not check_render_pipe_str(opts['renderer'], rend, opts['renderer_blacklist'], opts['renderer_whitelist']):
         err = ('The renderer {0} is unavailable, this error is often because '
                'the needed software is unavailable'.format(opts['renderer']))
         log.critical(err)
@@ -583,7 +588,7 @@ def render(opts, functions, states=None):
     return rend
 
 
-def grain_funcs(opts):
+def grain_funcs(opts, proxy=None):
     '''
     Returns the grain functions
 
@@ -612,6 +617,11 @@ def grains(opts, force_refresh=False, proxy=None):
     Return the functions for the dynamic grains and the values for the static
     grains.
 
+    Since grains are computed early in the startup process, grains functions
+    do not have __salt__ or __proxy__ available.  At proxy-minion startup,
+    this function is called with the proxymodule LazyLoader object so grains
+    functions can communicate with their controlled device.
+
     .. code-block:: python
 
         import salt.config
@@ -621,13 +631,13 @@ def grains(opts, force_refresh=False, proxy=None):
         __grains__ = salt.loader.grains(__opts__)
         print __grains__['id']
     '''
-    # if we hae no grains, lets try loading from disk (TODO: move to decorator?)
+    # if we have no grains, lets try loading from disk (TODO: move to decorator?)
+    cfn = os.path.join(
+        opts['cachedir'],
+        'grains.cache.p'
+    )
     if not force_refresh:
         if opts.get('grains_cache', False):
-            cfn = os.path.join(
-                opts['cachedir'],
-                'grains.cache.p'
-            )
             if os.path.isfile(cfn):
                 grains_cache_age = int(time.time() - os.path.getmtime(cfn))
                 if opts.get('grains_cache_expiration', 300) >= grains_cache_age and not \
@@ -680,7 +690,7 @@ def grains(opts, force_refresh=False, proxy=None):
         opts['grains'] = {}
 
     grains_data = {}
-    funcs = grain_funcs(opts)
+    funcs = grain_funcs(opts, proxy=proxy)
     if force_refresh:  # if we refresh, lets reload grain modules
         funcs.clear()
     # Run core grains
@@ -701,8 +711,19 @@ def grains(opts, force_refresh=False, proxy=None):
         if key.startswith('core.') or key == '_errors':
             continue
         try:
-            ret = fun()
+            # Grains are loaded too early to take advantage of the injected
+            # __proxy__ variable.  Pass an instance of that LazyLoader
+            # here instead to grains functions if the grains functions take
+            # one parameter.  Then the grains can have access to the
+            # proxymodule for retrieving information from the connected
+            # device.
+            if fun.__code__.co_argcount == 1:
+                ret = fun(proxy)
+            else:
+                ret = fun()
         except Exception:
+            if is_proxy():
+                log.info('The following CRITICAL message may not be an error; the proxy may not be completely established yet.')
             log.critical(
                 'Failed to load grains defined in grain file {0} in '
                 'function {1}, error:\n'.format(
@@ -717,6 +738,25 @@ def grains(opts, force_refresh=False, proxy=None):
             salt.utils.dictupdate.update(grains_data, ret)
         else:
             grains_data.update(ret)
+
+    if opts.get('proxy_merge_grains_in_module', False) and proxy:
+        try:
+            proxytype = proxy.opts['proxy']['proxytype']
+            if proxytype+'.grains' in proxy:
+                if proxytype+'.initialized' in proxy and proxy[proxytype+'.initialized']():
+                    try:
+                        proxytype = proxy.opts['proxy']['proxytype']
+                        ret = proxy[proxytype+'.grains']()
+                        if grains_deep_merge:
+                            salt.utils.dictupdate.update(grains_data, ret)
+                        else:
+                            grains_data.update(ret)
+                    except Exception:
+                        log.critical('Failed to run proxy\'s grains function!',
+                            exc_info=True
+                        )
+        except KeyError:
+            pass
 
     grains_data.update(opts['grains'])
     # Write cache if enabled
@@ -762,14 +802,17 @@ def call(fun, **kwargs):
     return funcs[fun](*args)
 
 
-def runner(opts):
+def runner(opts, utils=None):
     '''
     Directly call a function inside a loader directory
     '''
+    if utils is None:
+        utils = {}
     ret = LazyLoader(
         _module_dirs(opts, 'runners', 'runner', ext_type_dirs='runner_dirs'),
         opts,
         tag='runners',
+        pack={'__utils__': utils},
     )
     # TODO: change from __salt__ to something else, we overload __salt__ too much
     ret.pack['__salt__'] = ret
@@ -792,7 +835,7 @@ def sdb(opts, functions=None, whitelist=None):
     Make a very small database call
     '''
     return LazyLoader(
-        _module_dirs(opts, 'sdb', 'sdb'),
+        _module_dirs(opts, 'sdb'),
         opts,
         tag='sdb',
         pack={'__sdb__': functions},
@@ -810,7 +853,6 @@ def pkgdb(opts):
         _module_dirs(
             opts,
             'pkgdb',
-            'pkgdb',
             base_path=os.path.join(SALT_BASE_PATH, 'spm')
         ),
         opts,
@@ -827,7 +869,6 @@ def pkgfiles(opts):
     return LazyLoader(
         _module_dirs(
             opts,
-            'pkgfiles',
             'pkgfiles',
             base_path=os.path.join(SALT_BASE_PATH, 'spm')
         ),
@@ -851,7 +892,8 @@ def clouds(opts):
                      int_type='clouds'),
         opts,
         tag='clouds',
-        pack={'__active_provider_name__': None},
+        pack={'__utils__': salt.loader.utils(opts),
+              '__active_provider_name__': None},
     )
     for funcname in LIBCLOUD_FUNCS_NOT_SUPPORTED:
         log.trace(
@@ -869,7 +911,7 @@ def netapi(opts):
     Return the network api functions
     '''
     return LazyLoader(
-        _module_dirs(opts, 'netapi', 'netapi'),
+        _module_dirs(opts, 'netapi'),
         opts,
         tag='netapi',
     )
@@ -884,6 +926,18 @@ def executors(opts, functions=None, context=None):
         opts,
         tag='executor',
         pack={'__salt__': functions, '__context__': context or {}},
+    )
+
+
+def cache(opts, serial):
+    '''
+    Returns the returner modules
+    '''
+    return LazyLoader(
+        _module_dirs(opts, 'cache', 'cache'),
+        opts,
+        tag='cache',
+        pack={'__opts__': opts, '__context__': {'serial': serial}},
     )
 
 
@@ -934,10 +988,26 @@ class FilterDictWrapper(MutableMapping):
 
 class LazyLoader(salt.utils.lazy.LazyDict):
     '''
-    Goals here:
-        - lazy loading
-        - minimize disk usage
+    A pseduo-dictionary which has a set of keys which are the
+    name of the module and function, delimited by a dot. When
+    the value of the key is accessed, the function is then loaded
+    from disk and into memory.
 
+    .. note::
+
+        Iterating over keys will cause all modules to be loaded.
+
+    :param list module_dirs: A list of directories on disk to search for modules
+    :param opts dict: The salt options dictionary.
+    :param tag str': The tag for the type of module to load
+    :param func mod_type_check: A function which can be used to verify files
+    :param dict pack: A dictionary of function to be packed into modules as they are loaded
+    :param list whitelist: A list of modules to whitelist
+    :param bool virtual_enable: Whether or not to respect the __virtual__ function when loading modules.
+    :param str virtual_funcs: The name of additional functions in the module to call to verify its functionality.
+                                If not true, the module will not load.
+    :returns: A LazyLoader object which functions as a dictionary. Keys are 'module.function' and values
+    are function references themselves which are loaded on-demand.
     # TODO:
         - move modules_max_memory into here
         - singletons (per tag)
@@ -954,7 +1024,9 @@ class LazyLoader(salt.utils.lazy.LazyDict):
                  pack=None,
                  whitelist=None,
                  virtual_enable=True,
-                 static_modules=None
+                 static_modules=None,
+                 proxy=None,
+                 virtual_funcs=None,
                  ):  # pylint: disable=W0231
         '''
         In pack, if any of the values are None they will be replaced with an
@@ -990,6 +1062,10 @@ class LazyLoader(salt.utils.lazy.LazyDict):
         self.loaded_modules = {}  # mapping of module_name -> dict_of_functions
         self.loaded_files = set()  # TODO: just remove them from file_mapping?
         self.static_modules = static_modules if static_modules else []
+
+        if virtual_funcs is None:
+            virtual_funcs = []
+        self.virtual_funcs = virtual_funcs
 
         self.disabled = set(self.opts.get('disable_{0}s'.format(self.tag), []))
 
@@ -1130,9 +1206,11 @@ class LazyLoader(salt.utils.lazy.LazyDict):
                         curr_ext = self.file_mapping[f_noext][1]
                         #log.debug("****** curr_ext={0} ext={1} suffix_order={2}".format(curr_ext, ext, suffix_order))
                         if '' in (curr_ext, ext) and curr_ext != ext:
-                            log.error('Module/package collision: {0!r} and {1!r}'.format(
-                                fpath, self.file_mapping[f_noext][0]
-                            ))
+                            log.error(
+                                'Module/package collision: \'%s\' and \'%s\'',
+                                fpath,
+                                self.file_mapping[f_noext][0]
+                            )
                         if not curr_ext or suffix_order.index(ext) >= suffix_order.index(curr_ext):
                             continue  # Next filename
 
@@ -1165,11 +1243,11 @@ class LazyLoader(salt.utils.lazy.LazyDict):
         '''
         if '__grains__' not in self.pack:
             self.context_dict['grains'] = opts.get('grains', {})
-            self.pack['__grains__'] = salt.utils.context.NamespacedDictWrapper(self.context_dict, 'grains')
+            self.pack['__grains__'] = salt.utils.context.NamespacedDictWrapper(self.context_dict, 'grains', override_name='grains')
 
         if '__pillar__' not in self.pack:
             self.context_dict['pillar'] = opts.get('pillar', {})
-            self.pack['__pillar__'] = salt.utils.context.NamespacedDictWrapper(self.context_dict, 'pillar')
+            self.pack['__pillar__'] = salt.utils.context.NamespacedDictWrapper(self.context_dict, 'pillar', override_name='pillar')
 
         mod_opts = {}
         for key, val in list(opts.items()):
@@ -1255,7 +1333,10 @@ class LazyLoader(salt.utils.lazy.LazyDict):
 
         except IOError:
             raise
-        except ImportError:
+        except ImportError as exc:
+            if 'magic number' in str(exc):
+                log.warning('Failed to import {0} {1}. Bad magic number. If migrating '
+                        'from Python2 to Python3, remove all .pyc files and try again.'.format(self.tag, name))
             log.debug(
                 'Failed to import {0} {1}:\n'.format(
                     self.tag, name
@@ -1316,23 +1397,25 @@ class LazyLoader(salt.utils.lazy.LazyDict):
         # if virtual modules are enabled, we need to look for the
         # __virtual__() function inside that module and run it.
         if self.virtual_enable:
-            (virtual_ret, module_name, virtual_err) = self.process_virtual(
-                mod,
-                module_name,
-            )
-            if virtual_err is not None:
-                log.debug('Error loading {0}.{1}: {2}'.format(self.tag,
-                                                              module_name,
-                                                              virtual_err,
-                                                              ))
+            virtual_funcs_to_process = ['__virtual__'] + self.virtual_funcs
+            for virtual_func in virtual_funcs_to_process:
+                (virtual_ret, module_name, virtual_err) = self.process_virtual(
+                    mod,
+                    module_name,
+                )
+                if virtual_err is not None:
+                    log.trace('Error loading {0}.{1}: {2}'.format(self.tag,
+                                                                  module_name,
+                                                                  virtual_err,
+                                                                  ))
 
-            # if process_virtual returned a non-True value then we are
-            # supposed to not process this module
-            if virtual_ret is not True:
-                # If a module has information about why it could not be loaded, record it
-                self.missing_modules[module_name] = virtual_err
-                self.missing_modules[name] = virtual_err
-                return False
+                # if process_virtual returned a non-True value then we are
+                # supposed to not process this module
+                if virtual_ret is not True and module_name not in self.missing_modules:
+                    # If a module has information about why it could not be loaded, record it
+                    self.missing_modules[module_name] = virtual_err
+                    self.missing_modules[name] = virtual_err
+                    return False
 
         # If this is a proxy minion then MOST modules cannot work. Therefore, require that
         # any module that does work with salt-proxy-minion define __proxyenabled__ as a list
@@ -1464,7 +1547,7 @@ class LazyLoader(salt.utils.lazy.LazyDict):
             if func.__name__ in outp:
                 func.__outputter__ = outp[func.__name__]
 
-    def process_virtual(self, mod, module_name):
+    def process_virtual(self, mod, module_name, virtual_func='__virtual__'):
         '''
         Given a loaded module and its default name determine its virtual name
 
@@ -1495,7 +1578,7 @@ class LazyLoader(salt.utils.lazy.LazyDict):
             if hasattr(mod, '__virtual__') and inspect.isfunction(mod.__virtual__):
                 try:
                     start = time.time()
-                    virtual = mod.__virtual__()
+                    virtual = getattr(mod, virtual_func)()
                     if isinstance(virtual, tuple):
                         error_reason = virtual[1]
                         virtual = virtual[0]

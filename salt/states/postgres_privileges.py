@@ -71,7 +71,9 @@ def __virtual__():
     '''
     Only load if the postgres module is present
     '''
-    return 'postgres.privileges_grant' in __salt__
+    if 'postgres.privileges_grant' not in __salt__:
+        return (False, 'Unable to load postgres module.  Make sure `postgres.bins_dir` is set.')
+    return True
 
 
 def present(name,
@@ -90,10 +92,11 @@ def present(name,
     Grant the requested privilege(s) on the specified object to a role
 
     name
-        Name of the role to which privilages should be granted
+        Name of the role to which privileges should be granted
 
     object_name
-       Name of the object on which the grant is to be performed
+       Name of the object on which the grant is to be performed.
+       'ALL' may be used for objects of type 'table' or 'sequence'.
 
     object_type
        The object type, which can be one of the following:
@@ -107,7 +110,7 @@ def present(name,
        - group
 
     privileges
-       Comma separated list of privilages to grant, from the list below:
+       List of privileges to grant, from the list below:
 
        - INSERT
        - CREATE
@@ -210,7 +213,7 @@ def absent(name,
     Revoke the requested privilege(s) on the specificed object(s)
 
     name
-        Name of the role whose privilages should be revoked
+        Name of the role whose privileges should be revoked
 
     object_name
        Name of the object on which the revoke is to be performed
@@ -227,7 +230,7 @@ def absent(name,
        - group
 
     privileges
-       Comma separated list of privilages to revoke, from the list below:
+       Comma separated list of privileges to revoke, from the list below:
 
        - INSERT
        - CREATE

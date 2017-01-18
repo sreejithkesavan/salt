@@ -2,6 +2,12 @@
 '''
 Module for managing Windows Users
 
+.. important::
+    If you feel that Salt should be using this module to manage users on a
+    minion, and it is using a different module (or gives an error similar to
+    *'user.info' is not available*), see :ref:`here
+    <module-provider-override>`.
+
 :depends:
         - pywintypes
         - win32api
@@ -57,59 +63,6 @@ def __virtual__():
     if HAS_WIN32NET_MODS and salt.utils.is_windows():
         return __virtualname__
     return (False, "Module win_useradd: module has failed dependencies or is not on Windows client")
-
-
-def _get_date_time_format(dt_string):
-    '''
-    Copied from win_system.py (_get_date_time_format)
-
-    Function that detects the date/time format for the string passed.
-
-    :param str dt_string:
-        A date/time string
-
-    :return: The format of the passed dt_string
-    :rtype: str
-    '''
-    valid_formats = [
-        '%Y-%m-%d %I:%M:%S %p',
-        '%m-%d-%y %I:%M:%S %p',
-        '%m-%d-%Y %I:%M:%S %p',
-        '%m/%d/%y %I:%M:%S %p',
-        '%m/%d/%Y %I:%M:%S %p',
-        '%Y/%m/%d %I:%M:%S %p',
-        '%Y-%m-%d %I:%M:%S',
-        '%m-%d-%y %I:%M:%S',
-        '%m-%d-%Y %I:%M:%S',
-        '%m/%d/%y %I:%M:%S',
-        '%m/%d/%Y %I:%M:%S',
-        '%Y/%m/%d %I:%M:%S',
-        '%Y-%m-%d %I:%M %p',
-        '%m-%d-%y %I:%M %p',
-        '%m-%d-%Y %I:%M %p',
-        '%m/%d/%y %I:%M %p',
-        '%m/%d/%Y %I:%M %p',
-        '%Y/%m/%d %I:%M %p',
-        '%Y-%m-%d %I:%M',
-        '%m-%d-%y %I:%M',
-        '%m-%d-%Y %I:%M',
-        '%m/%d/%y %I:%M',
-        '%m/%d/%Y %I:%M',
-        '%Y/%m/%d %I:%M',
-        '%Y-%m-%d',
-        '%m-%d-%y',
-        '%m-%d-%Y',
-        '%m/%d/%y',
-        '%m/%d/%Y',
-        '%Y/%m/%d',
-    ]
-    for dt_format in valid_formats:
-        try:
-            datetime.strptime(dt_string, dt_format)
-            return dt_format
-        except ValueError:
-            continue
-    return False
 
 
 def add(name,
@@ -305,11 +258,10 @@ def update(name,
         if expiration_date == 'Never':
             user_info['acct_expires'] = win32netcon.TIMEQ_FOREVER
         else:
-            date_format = _get_date_time_format(expiration_date)
-            if date_format:
-                dt_obj = datetime.strptime(expiration_date, date_format)
-            else:
-                return 'Invalid start_date'
+            try:
+                dt_obj = salt.utils.date_cast(expiration_date)
+            except (ValueError, RuntimeError):
+                return 'Invalid Date/Time Format: {0}'.format(expiration_date)
             user_info['acct_expires'] = time.mktime(dt_obj.timetuple())
     if expired is not None:
         if expired:
@@ -573,7 +525,7 @@ def removegroup(name, group):
     return ret['retcode'] == 0
 
 
-def chhome(name, home, persist=False):
+def chhome(name, home, **kwargs):
     '''
     Change the home directory of the user, pass True for persist to move files
     to the new home directory if the old home directory exist.
@@ -583,9 +535,6 @@ def chhome(name, home, persist=False):
 
     :param str home:
         new location of the home directory
-
-    :param bool persist:
-        True to move the contents of the existing home directory to the new location
 
     :return:
         True if successful. False is unsuccessful.
@@ -597,6 +546,13 @@ def chhome(name, home, persist=False):
 
         salt '*' user.chhome foo \\\\fileserver\\home\\foo True
     '''
+    kwargs = salt.utils.clean_kwargs(**kwargs)
+    persist = kwargs.pop('persist', False)
+    if kwargs:
+        salt.utils.invalid_kwargs(kwargs)
+    if persist:
+        log.info('Ignoring unsupported \'persist\' argument to user.chhome')
+
     pre_info = info(name)
 
     if not pre_info:
@@ -607,11 +563,6 @@ def chhome(name, home, persist=False):
 
     if not update(name=name, home=home):
         return False
-
-    if persist and home is not None and pre_info['home'] is not None:
-        cmd = 'move /Y {0} {1}'.format(pre_info['home'], home)
-        if __salt__['cmd.retcode'](cmd, python_shell=False) != 0:
-            log.debug('Failed to move the contents of the Home Directory')
 
     post_info = info(name)
     if post_info['home'] != pre_info['home']:
@@ -714,7 +665,10 @@ def chgroups(name, groups, append=True):
             continue
         group = _cmd_quote(group).lstrip('\'').rstrip('\'')
         cmd = 'net localgroup "{0}" {1} /add'.format(group, name)
-        __salt__['cmd.run_all'](cmd, python_shell=True)
+        out = __salt__['cmd.run_all'](cmd, python_shell=True)
+        if out['retcode'] != 0:
+            log.error(out['stdout'])
+            return False
 
     agrps = set(list_groups(name))
     return len(ugrps - agrps) == 0

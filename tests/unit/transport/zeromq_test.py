@@ -6,8 +6,9 @@
 # Import python libs
 from __future__ import absolute_import
 import os
-import threading
 import time
+import threading
+import platform
 
 import zmq.eventloop.ioloop
 # support pyzmq 13.0.x, TODO: remove once we force people to 14.0.x
@@ -18,6 +19,7 @@ from tornado.testing import AsyncTestCase
 import tornado.gen
 
 import salt.config
+import salt.ext.six as six
 import salt.utils
 import salt.transport.server
 import salt.transport.client
@@ -34,6 +36,10 @@ import integration
 from unit.transport.req_test import ReqChannelMixin
 from unit.transport.pub_test import PubChannelMixin
 
+ON_SUSE = False
+if 'SuSE' in platform.dist():
+    ON_SUSE = True
+
 
 # TODO: move to a library?
 def get_config_file_path(filename):
@@ -46,6 +52,8 @@ class BaseZMQReqCase(TestCase):
     '''
     @classmethod
     def setUpClass(cls):
+        if not hasattr(cls, '_handle_payload'):
+            return
         cls.master_opts = salt.config.master_config(get_config_file_path('master'))
         cls.master_opts.update({
             'transport': 'zeromq',
@@ -75,10 +83,22 @@ class BaseZMQReqCase(TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if not hasattr(cls, '_handle_payload'):
+            return
+        # Attempting to kill the children hangs the test suite.
+        # Let the test suite handle this instead.
         cls.process_manager.kill_children()
         time.sleep(2)  # Give the procs a chance to fully close before we stop the io_loop
         cls.io_loop.stop()
         cls.server_channel.close()
+        del cls.server_channel
+
+    @classmethod
+    def _handle_payload(cls, payload):
+        '''
+        TODO: something besides echo
+        '''
+        return payload, {'fun': 'send_clear'}
 
 
 class ClearReqTestCases(BaseZMQReqCase, ReqChannelMixin):
@@ -97,6 +117,7 @@ class ClearReqTestCases(BaseZMQReqCase, ReqChannelMixin):
         raise tornado.gen.Return((payload, {'fun': 'send_clear'}))
 
 
+@skipIf(ON_SUSE, 'Skipping until https://github.com/saltstack/salt/issues/32902 gets fixed')
 class AESReqTestCases(BaseZMQReqCase, ReqChannelMixin):
     def setUp(self):
         self.channel = salt.transport.client.ReqChannel.factory(self.minion_opts)
@@ -111,6 +132,12 @@ class AESReqTestCases(BaseZMQReqCase, ReqChannelMixin):
 
     # TODO: make failed returns have a specific framing so we can raise the same exception
     # on encrypted channels
+    #
+    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    #
+    # WARNING: This test will fail randomly on any system with > 1 CPU core!!!
+    #
+    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     def test_badload(self):
         '''
         Test a variety of bad requests, make sure that we get some sort of error
@@ -176,7 +203,7 @@ class BaseZMQPubCase(AsyncTestCase):
     def tearDown(self):
         super(BaseZMQPubCase, self).tearDown()
         failures = []
-        for k, v in self.io_loop._handlers.iteritems():
+        for k, v in six.iteritems(self.io_loop._handlers):
             if self._start_handlers.get(k) != v:
                 failures.append((k, v))
         if len(failures) > 0:

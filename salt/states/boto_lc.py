@@ -169,24 +169,27 @@ def present(
         with volume_type, delete_on_termination, iops, size, encrypted,
         snapshot_id.
 
-    volume_type
-        Indicates what volume type to use. Valid values are standard, io1, gp2.
-        Default is standard.
+        volume_type
+            Indicates what volume type to use. Valid values are standard, io1, gp2.
+            Default is standard.
 
-    delete_on_termination
-        Indicates whether to delete the volume on instance termination (true) or
-        not (false).
+        delete_on_termination
+            Indicates whether to delete the volume on instance termination (true) or
+            not (false).
 
-    iops
-        For Provisioned IOPS (SSD) volumes only. The number of I/O operations per
-        second (IOPS) to provision for the volume.
+        iops
+            For Provisioned IOPS (SSD) volumes only. The number of I/O operations per
+            second (IOPS) to provision for the volume.
 
-    encrypted
-        Indicates whether the volume should be encrypted. Encrypted EBS volumes must
-        be attached to instances that support Amazon EBS encryption. Volumes that are
-        created from encrypted snapshots are automatically encrypted. There is no way
-        to create an encrypted volume from an unencrypted snapshot or an unencrypted
-        volume from an encrypted snapshot.
+        size
+            Desired volume size (in GiB).
+
+        encrypted
+            Indicates whether the volume should be encrypted. Encrypted EBS volumes must
+            be attached to instances that support Amazon EBS encryption. Volumes that are
+            created from encrypted snapshots are automatically encrypted. There is no way
+            to create an encrypted volume from an unencrypted snapshot or an unencrypted
+            volume from an encrypted snapshot.
 
     instance_monitoring
         Whether instances in group are launched with detailed monitoring.
@@ -240,11 +243,24 @@ def present(
         # TODO: Ensure image_id, key_name, security_groups and instance_profile
         # exist, or throw an invocation error.
         created = __salt__['boto_asg.create_launch_configuration'](
-            name, image_id, key_name, security_groups, user_data,
-            instance_type, kernel_id, ramdisk_id, block_device_mappings,
-            instance_monitoring, spot_price, instance_profile_name,
-            ebs_optimized, associate_public_ip_address,
-            region, key, keyid, profile)
+            name,
+            image_id,
+            key_name=key_name,
+            security_groups=security_groups,
+            user_data=user_data,
+            instance_type=instance_type,
+            kernel_id=kernel_id,
+            ramdisk_id=ramdisk_id,
+            block_device_mappings=block_device_mappings,
+            instance_monitoring=instance_monitoring,
+            spot_price=spot_price,
+            instance_profile_name=instance_profile_name,
+            ebs_optimized=ebs_optimized,
+            associate_public_ip_address=associate_public_ip_address,
+            region=region,
+            key=key,
+            keyid=keyid,
+            profile=profile)
         if created:
             ret['changes']['old'] = None
             ret['changes']['new'] = name

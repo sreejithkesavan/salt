@@ -15,7 +15,7 @@ state:
 
 Note that this example is probably unnecessary to use in practice, since the
 ``mine_functions`` and ``mine_interval`` config parameters can be used to
-schedule updates for the mine (see :doc:`here </topics/mine/index>` for more
+schedule updates for the mine (see :ref:`here <salt-mine>` for more
 info).
 
 It is sometimes desirable to trigger a function call after a state is executed,
@@ -52,6 +52,7 @@ with ``m_``:
 * name
 * names
 * state
+* saltenv
 
 For example:
 
@@ -115,11 +116,11 @@ def wait(name, **kwargs):
         return ``True`` but not actually execute, unless one of the following
         two things happens:
 
-        1. The state has a :doc:`watch requisite </ref/states/requisites>`, and
+        1. The state has a :ref:`watch requisite <requisites-watch>`, and
            the state which it is watching changes.
 
-        2. Another state has a :doc:`watch_in requisite
-           </ref/states/requisites>` which references this state, and the state
+        2. Another state has a :ref:`watch_in requisite
+           <requisites-watch-in>` which references this state, and the state
            wth the ``watch_in`` changes.
     '''
     return {'name': name,
@@ -141,7 +142,7 @@ def run(name, **kwargs):
     ``returner``
         Specify the returner to send the return of the module execution to
 
-    ``**kwargs``
+    ``kwargs``
         Pass any arguments needed to execute the function
     '''
     ret = {'name': name,
@@ -183,6 +184,9 @@ def run(name, **kwargs):
         elif arg == 'state':
             if 'm_state' in kwargs:
                 defaults[arg] = kwargs.pop('m_state')
+        elif arg == 'saltenv':
+            if 'm_saltenv' in kwargs:
+                defaults[arg] = kwargs.pop('m_saltenv')
         if arg in kwargs:
             defaults[arg] = kwargs.pop(arg)
     missing = set()
@@ -195,6 +199,8 @@ def run(name, **kwargs):
             rarg = 'm_names'
         elif arg == 'state':
             rarg = 'm_state'
+        elif arg == 'saltenv':
+            rarg = 'm_saltenv'
         else:
             rarg = arg
         if rarg not in kwargs and arg not in defaults:

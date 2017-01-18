@@ -773,9 +773,10 @@ def is_hyper():
         # virtual_subtype isn't set everywhere.
         return False
     try:
-        if 'xen_' not in salt.utils.fopen('/proc/modules').read():
-            return False
-    except IOError:
+        with salt.utils.fopen('/proc/modules') as fp_:
+            if 'xen_' not in fp_.read():
+                return False
+    except (OSError, IOError):
         return False
     # there must be a smarter way...
     return 'xenstore' in __salt__['cmd.run'](__grains__['ps'])
@@ -930,7 +931,7 @@ def vm_diskstats(vm_=None):
 # Deprecated aliases
 def create(domain):
     '''
-    .. deprecated:: Nitrogen
+    .. deprecated:: 2016.3.0
        Use :py:func:`~salt.modules.virt.start` instead.
 
     Start a defined domain
@@ -947,7 +948,7 @@ def create(domain):
 
 def destroy(domain):
     '''
-    .. deprecated:: Nitrogen
+    .. deprecated:: 2016.3.0
        Use :py:func:`~salt.modules.virt.stop` instead.
 
     Power off a defined domain
@@ -964,7 +965,7 @@ def destroy(domain):
 
 def list_vms():
     '''
-    .. deprecated:: Nitrogen
+    .. deprecated:: 2016.3.0
        Use :py:func:`~salt.modules.virt.list_domains` instead.
 
     List all virtual machines.

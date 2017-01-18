@@ -14,7 +14,7 @@ import re
 
 import time
 
-from utils.timeout import wait_for
+from salt.utils.timeout import wait_for
 from salt.ext.six.moves import range
 
 log = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ try:
 
 except ImportError:
     VirtualBoxManager = None
-    log.exception("Couldn't import VirtualBox API")
+    log.trace("Couldn't import VirtualBox API")
 
 _virtualboxManager = None
 
@@ -130,7 +130,7 @@ def vb_get_manager():
     @rtype: VirtualBoxManager
     """
     global _virtualboxManager
-    if _virtualboxManager is None:
+    if _virtualboxManager is None and HAS_LIBS:
         # Reloading the API extends sys.paths for subprocesses of multiprocessing, since they seem to share contexts
         reload(vboxapi)
         _virtualboxManager = vboxapi.VirtualBoxManager(None, None)
@@ -514,7 +514,7 @@ def vb_xpcom_to_attribute_dict(xpcom,
         m = re.search(r"XPCOM.+implementing {0}".format(interface_name), str(xpcom))
         if not m:
             # TODO maybe raise error here?
-            log.warn("Interface %s is unknown and cannot be converted to dict", interface_name)
+            log.warning("Interface %s is unknown and cannot be converted to dict", interface_name)
             return dict()
 
     interface_attributes = set(attributes or XPCOM_ATTRIBUTES.get(interface_name, []))

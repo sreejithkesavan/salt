@@ -1,3 +1,5 @@
+.. _state-system-reference:
+
 ======================
 State System Reference
 ======================
@@ -25,7 +27,7 @@ configure and manage a few servers or a few thousand servers. It allows
 configurations to be kept under version control.
 
 Salt States is an extension of the Salt Modules that we discussed in the
-previous :doc:`remote execution </topics/tutorials/modules>` tutorial. Instead
+previous :ref:`remote execution <tutorial-remote-execution-modules>` tutorial. Instead
 of calling one-off executions the state of a system can be easily defined and
 then enforced.
 
@@ -39,7 +41,7 @@ an understanding of Salt states and how to write the states is needed as well.
 .. note::
 
     States are compiled and executed only on minions that have been targeted.
-    To execute functions directly on masters, see :doc:`runners </ref/runners/index>`.
+    To execute functions directly on masters, see :ref:`runners <runners>`.
 
 Salt SLS System
 ---------------
@@ -213,7 +215,7 @@ earlier, requires `pip`_ to be installed system-wide. Let's execute this state:
 
 .. code-block:: bash
 
-    salt-call state.sls pep8
+    salt-call state.apply pep8
 
 The execution output would be something like:
 
@@ -292,7 +294,7 @@ Let's run it, once:
 
 .. code-block:: bash
 
-    salt-call state.sls pep8
+    salt-call state.apply pep8
 
 The output is:
 

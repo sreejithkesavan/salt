@@ -5,7 +5,7 @@ Connection module for Amazon IAM
 .. versionadded:: 2014.7.0
 
 :configuration: This module accepts explicit iam credentials but can also utilize
-    IAM roles assigned to the instance trough Instance Profiles. Dynamic
+    IAM roles assigned to the instance through Instance Profiles. Dynamic
     credentials are then automatically obtained from AWS API and no further
     configuration is necessary. More Information available at:
 
@@ -44,13 +44,13 @@ import json
 import yaml
 
 # Import salt libs
+import salt.ext.six as six
 import salt.utils.compat
 import salt.utils.odict as odict
 import salt.utils.boto
 
 # Import third party libs
 # pylint: disable=unused-import
-from salt.ext.six import string_types
 from salt.ext.six.moves.urllib.parse import unquote as _unquote  # pylint: disable=no-name-in-module
 try:
     import boto
@@ -559,7 +559,7 @@ def put_group_policy(group_name, policy_name, policy_json, region=None, key=None
         return False
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
     try:
-        if not isinstance(policy_json, string_types):
+        if not isinstance(policy_json, six.string_types):
             policy_json = json.dumps(policy_json)
         created = conn.put_group_policy(group_name, policy_name,
                                         policy_json)
@@ -634,6 +634,73 @@ def get_group_policy(group_name, policy_name, region=None, key=None,
         msg = 'Failed to get group {0} info.'
         log.error(msg.format(group_name))
         return False
+
+
+def get_all_groups(path_prefix='/', region=None, key=None, keyid=None,
+                 profile=None):
+    '''
+    Get and return all IAM group details, starting at the optional path.
+
+    .. versionadded:: 2016.3.0
+
+    CLI Example:
+
+        salt-call boto_iam.get_all_groups
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    if not conn:
+        return None
+    _groups = conn.get_all_groups(path_prefix=path_prefix)
+    groups = _groups.list_groups_response.list_groups_result.groups
+    marker = getattr(
+        _groups.list_groups_response.list_groups_result, 'marker', None
+    )
+    while marker:
+        _groups = conn.get_all_groups(path_prefix=path_prefix, marker=marker)
+        groups = groups + _groups.list_groups_response.list_groups_result.groups
+        marker = getattr(
+            _groups.list_groups_response.list_groups_result, 'marker', None
+        )
+    return groups
+
+
+def get_all_instance_profiles(path_prefix='/', region=None, key=None,
+                              keyid=None, profile=None):
+    '''
+    Get and return all IAM instance profiles, starting at the optional path.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+        salt-call boto_iam.get_all_instance_profiles
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    marker = False
+    profiles = []
+    while marker is not None:
+        marker = marker if marker else None
+        p = conn.list_instance_profiles(path_prefix=path_prefix,
+                                                   marker=marker)
+        res = p.list_instance_profiles_response.list_instance_profiles_result
+        profiles += res.instance_profiles
+        marker = getattr(res, 'marker', None)
+    return profiles
+
+
+def list_instance_profiles(path_prefix='/', region=None, key=None,
+                           keyid=None, profile=None):
+    '''
+    List all IAM instance profiles, starting at the optional path.
+
+    .. versionadded:: 2016.11.0
+
+    CLI Example:
+
+        salt-call boto_iam.list_instance_profiles
+    '''
+    p = get_all_instance_profiles(path_prefix, region, key, keyid, profile)
+    return [i['instance_profile_name'] for i in p]
 
 
 def get_all_group_policies(group_name, region=None, key=None, keyid=None,
@@ -1101,7 +1168,7 @@ def create_role_policy(role_name, policy_name, policy, region=None, key=None,
         if _policy == policy:
             return True
         mode = 'modify'
-    if isinstance(policy, string_types):
+    if isinstance(policy, six.string_types):
         policy = json.loads(policy, object_pairs_hook=odict.OrderedDict)
     try:
         _policy = json.dumps(policy)
@@ -1162,7 +1229,7 @@ def update_assume_role_policy(role_name, policy_document, region=None,
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
 
-    if isinstance(policy_document, string_types):
+    if isinstance(policy_document, six.string_types):
         policy_document = json.loads(policy_document,
                                      object_pairs_hook=odict.OrderedDict)
     try:
@@ -1232,6 +1299,7 @@ def get_account_id(region=None, key=None, keyid=None, profile=None):
             # The get_user call returns an user ARN:
             #    arn:aws:iam::027050522557:user/salt-test
             arn = ret['get_user_response']['get_user_result']['user']['arn']
+            account_id = arn.split(':')[4]
         except boto.exception.BotoServerError:
             # If call failed, then let's try to get the ARN from the metadata
             timeout = boto.config.getfloat(
@@ -1240,16 +1308,72 @@ def get_account_id(region=None, key=None, keyid=None, profile=None):
             attempts = boto.config.getint(
                 'Boto', 'metadata_service_num_attempts', 1
             )
-            metadata = boto.utils.get_instance_metadata(
+            identity = boto.utils.get_instance_identity(
                 timeout=timeout, num_retries=attempts
             )
             try:
-                arn = metadata['iam']['info']['InstanceProfileArn']
+                account_id = identity['document']['accountId']
             except KeyError:
-                log.error('Failed to get user or metadata ARN information in'
+                log.error('Failed to get account id from instance_identity in'
                           ' boto_iam.get_account_id.')
-        __context__[cache_key] = arn.split(':')[4]
+        __context__[cache_key] = account_id
     return __context__[cache_key]
+
+
+def get_all_roles(path_prefix=None, region=None, key=None, keyid=None,
+                 profile=None):
+    '''
+    Get and return all IAM role details, starting at the optional path.
+
+    .. versionadded:: 2016.3.0
+
+    CLI Example:
+
+        salt-call boto_iam.get_all_roles
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    if not conn:
+        return None
+    _roles = conn.list_roles(path_prefix=path_prefix)
+    roles = _roles.list_roles_response.list_roles_result.roles
+    marker = getattr(
+        _roles.list_roles_response.list_roles_result, 'marker', None
+    )
+    while marker:
+        _roles = conn.list_roles(path_prefix=path_prefix, marker=marker)
+        roles = roles + _roles.list_roles_response.list_roles_result.roles
+        marker = getattr(
+            _roles.list_roles_response.list_roles_result, 'marker', None
+        )
+    return roles
+
+
+def get_all_users(path_prefix='/', region=None, key=None, keyid=None,
+                 profile=None):
+    '''
+    Get and return all IAM user details, starting at the optional path.
+
+    .. versionadded:: 2016.3.0
+
+    CLI Example:
+
+        salt-call boto_iam.get_all_users
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    if not conn:
+        return None
+    _users = conn.get_all_users(path_prefix=path_prefix)
+    users = _users.list_users_response.list_users_result.users
+    marker = getattr(
+        _users.list_users_response.list_users_result, 'marker', None
+    )
+    while marker:
+        _users = conn.get_all_users(path_prefix=path_prefix, marker=marker)
+        users = users + _users.list_users_response.list_users_result.users
+        marker = getattr(
+            _users.list_users_response.list_users_result, 'marker', None
+        )
+    return users
 
 
 def get_all_user_policies(user_name, marker=None, max_items=None, region=None, key=None, keyid=None, profile=None):
@@ -1325,7 +1449,7 @@ def put_user_policy(user_name, policy_name, policy_json, region=None, key=None, 
         return False
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
     try:
-        if not isinstance(policy_json, string_types):
+        if not isinstance(policy_json, six.string_types):
             policy_json = json.dumps(policy_json)
         created = conn.put_user_policy(user_name, policy_name,
                                        policy_json)
@@ -1489,17 +1613,7 @@ def export_users(path_prefix='/', region=None, key=None, keyid=None,
     if not conn:
         return None
     results = odict.OrderedDict()
-    _users = conn.get_all_users(path_prefix=path_prefix)
-    users = _users.list_users_response.list_users_result.users
-    marker = getattr(
-        _users.list_users_response.list_users_result, 'marker', None
-    )
-    while marker:
-        _users = conn.get_all_users(path_prefix=path_prefix, marker=marker)
-        users = users + _users.list_users_response.list_users_result.users
-        marker = getattr(
-            _users.list_users_response.list_users_result, 'marker', None
-        )
+    users = get_all_users(path_prefix, region, key, keyid, profile)
     for user in users:
         name = user.user_name
         _policies = conn.get_all_user_policies(name, max_items=100)
@@ -1584,7 +1698,7 @@ def create_policy(policy_name, policy_document, path=None, description=None,
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
 
-    if not isinstance(policy_document, string_types):
+    if not isinstance(policy_document, six.string_types):
         policy_document = json.dumps(policy_document)
     params = {}
     for arg in 'path', 'description':
@@ -1712,7 +1826,7 @@ def create_policy_version(policy_name, policy_document, set_as_default=None,
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
 
-    if not isinstance(policy_document, string_types):
+    if not isinstance(policy_document, six.string_types):
         policy_document = json.dumps(policy_document)
     params = {}
     for arg in ('set_as_default',):
@@ -1985,7 +2099,7 @@ def list_entities_for_policy(policy_name, path_prefix=None, entity_filter=None,
           'policy_roles': [],
         }
         for ret in salt.utils.boto.paged_call(conn.list_entities_for_policy, policy_arn=policy_arn, **params):
-            for k, v in allret.iteritems():
+            for k, v in six.iteritems(allret):
                 v.extend(ret.get('list_entities_for_policy_response', {}).get('list_entities_for_policy_result', {}).get(k))
         return allret
     except boto.exception.BotoServerError as e:
@@ -2089,3 +2203,156 @@ def list_attached_role_policies(role_name, path_prefix=None, entity_filter=None,
         msg = 'Failed to list role {0} attached policies.'
         log.error(msg.format(role_name))
         return []
+
+
+def create_saml_provider(name, saml_metadata_document, region=None, key=None, keyid=None, profile=None):
+    '''
+    Create SAML provider
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion boto_iam.create_saml_provider my_saml_provider_name saml_metadata_document
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    try:
+        conn.create_saml_provider(saml_metadata_document, name)
+        msg = 'Successfully created {0} SAML provider.'
+        log.info(msg.format(name))
+        return True
+    except boto.exception.BotoServerError as e:
+        aws = salt.utils.boto.get_error(e)
+        log.debug(aws)
+        msg = 'Failed to create SAML provider {0}.'
+        log.error(msg.format(name))
+        return False
+
+
+def get_saml_provider_arn(name, region=None, key=None, keyid=None, profile=None):
+    '''
+    Get SAML provider
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion boto_iam.get_saml_provider_arn my_saml_provider_name
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    try:
+        response = conn.list_saml_providers()
+        for saml_provider in response.list_saml_providers_response.list_saml_providers_result.saml_provider_list:
+            if saml_provider['arn'].endswith(':saml-provider/' + name):
+                return saml_provider['arn']
+        return False
+    except boto.exception.BotoServerError as e:
+        aws = salt.utils.boto.get_error(e)
+        log.debug(aws)
+        msg = 'Failed to get ARN of SAML provider {0}.'
+        log.error(msg.format(name))
+        return False
+
+
+def delete_saml_provider(name, region=None, key=None, keyid=None, profile=None):
+    '''
+    Delete SAML provider
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion boto_iam.delete_saml_provider my_saml_provider_name
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    try:
+        saml_provider_arn = get_saml_provider_arn(name, region=region, key=key, keyid=keyid, profile=profile)
+        if not saml_provider_arn:
+            msg = 'SAML provider {0} not found.'
+            log.info(msg.format(name))
+            return True
+        conn.delete_saml_provider(saml_provider_arn)
+        msg = 'Successfully deleted {0} SAML provider.'
+        log.info(msg.format(name))
+        return True
+    except boto.exception.BotoServerError as e:
+        aws = salt.utils.boto.get_error(e)
+        log.debug(aws)
+        msg = 'Failed to delete {0} SAML provider.'
+        log.error(msg.format(name))
+        return False
+
+
+def list_saml_providers(region=None, key=None, keyid=None, profile=None):
+    '''
+    List SAML providers.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion boto_iam.list_saml_providers
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    try:
+        providers = []
+        info = conn.list_saml_providers()
+        for arn in info['list_saml_providers_response']['list_saml_providers_result']['saml_provider_list']:
+            providers.append(arn['arn'].rsplit('/', 1)[1])
+        return providers
+    except boto.exception.BotoServerError as e:
+        aws = salt.utils.boto.get_error(e)
+        log.debug(aws)
+        msg = 'Failed to get list of SAML providers.'
+        log.error(msg)
+        return False
+
+
+def get_saml_provider(name, region=None, key=None, keyid=None, profile=None):
+    '''
+    Get SAML provider document.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion boto_iam.get_saml_provider arn
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    try:
+        provider = conn.get_saml_provider(name)
+        return provider['get_saml_provider_response']['get_saml_provider_result']['saml_metadata_document']
+    except boto.exception.BotoServerError as e:
+        aws = salt.utils.boto.get_error(e)
+        log.debug(aws)
+        msg = 'Failed to get SAML provider document.'
+        log.error(msg)
+        return False
+
+
+def update_saml_provider(name, saml_metadata_document, region=None, key=None, keyid=None, profile=None):
+    '''
+    Update SAML provider.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt myminion boto_iam.update_saml_provider my_saml_provider_name saml_metadata_document
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    try:
+        saml_provider_arn = get_saml_provider_arn(name, region=region, key=key, keyid=keyid, profile=profile)
+        if not saml_provider_arn:
+            msg = 'SAML provider {0} not found.'
+            log.info(msg.format(name))
+            return False
+        if conn.update_saml_provider(name, saml_metadata_document):
+            return True
+        return False
+    except boto.exception.BotoServerError as e:
+        aws = salt.utils.boto.get_error(e)
+        log.debug(aws)
+        msg = 'Failed to update of SAML provider.'
+        log.error(msg.format(name))
+        return False

@@ -1,8 +1,8 @@
 .. _all-salt.runners:
 
-===========================
-Full list of runner modules
-===========================
+==============
+runner modules
+==============
 
 .. currentmodule:: salt.runners
 
@@ -33,8 +33,9 @@ Full list of runner modules
     pkg
     queue
     reactor
+    salt
+    saltutil
     sdb
-    ssh
     search
     spacewalk
     ssh

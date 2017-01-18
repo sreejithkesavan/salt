@@ -1,3 +1,5 @@
+.. _cloud-getting-started-vmware:
+
 ===========================
 Getting Started With VMware
 ===========================
@@ -24,6 +26,26 @@ This package can be installed using `pip` or `easy_install`:
     pip install pyvmomi
     easy_install pyvmomi
 
+.. note::
+
+    Version 6.0 of pyVmomi has some problems with SSL error handling on certain
+    versions of Python. If using version 6.0 of pyVmomi, the machine that you
+    are running the proxy minion process from must have either Python 2.7.9 or
+    newer This is due to an upstream dependency in pyVmomi 6.0 that is not supported
+    in Python version 2.6 to 2.7.8. If the version of Python running the salt-cloud
+    command is not in the supported range, you will need to install an earlier version
+    of pyVmomi. See `Issue #29537`_ for more information.
+
+.. _Issue #29537: https://github.com/saltstack/salt/issues/29537
+
+.. note::
+
+    pyVmomi doesn't expose the ability to specify the locale when connecting to
+    VMware. This causes parsing issues when connecting to an instance of VMware
+    running under a non-English locale. Until this feature is added upstream
+    `Issue #38402`_ contains a workaround.
+
+.. _Issue #38402: https://github.com/saltstack/salt/issues/38402
 
 Configuration
 =============
@@ -207,10 +229,13 @@ Set up an initial profile at ``/etc/salt/cloud.profiles`` or
     the current VM/template\'s vCPU count is used.
 
 ``cores_per_socket``
-    .. versionadded:: Boron
+    .. versionadded:: 2016.11.0
     Enter the number of cores per vCPU that you want the VM/template to have. If not specified,
-    this will default to 1. Note that you cannot assign more cores per socket than the total 
-    number of vCPUs assigned to the VM.
+    this will default to 1. 
+    
+    .. note::
+
+        Cores per socket should be less than or equal to the total number of vCPUs assigned to the VM/template.
 
 ``memory``
     Enter the memory size (in MB or GB) that you want the VM/template to have. If
@@ -566,6 +591,34 @@ Example of a minimal profile:
      cluster: 'Prod'
 
 
+Cloning from a Snapshot
+=======================
+
+
+.. versionadded:: 2016.3.5
+
+Cloning from a snapshot requires that one of the
+supported options be set in the cloud profile.
+
+Supported options are ``createNewChildDiskBacking``,
+``moveChildMostDiskBacking``, ``moveAllDiskBackingsAndAllowSharing``
+and ``moveAllDiskBackingsAndDisallowSharing``.
+
+Example of a minimal profile:
+
+.. code-block:: yaml
+
+  my-template-clone:
+    provider: vcenter01
+    clonefrom: 'salt_vm'
+    snapshot:
+      disk_move_type: createNewChildDiskBacking
+      # these types are also supported
+      # disk_move_type: moveChildMostDiskBacking
+      # disk_move_type: moveAllDiskBackingsAndAllowSharing
+      # disk_move_type: moveAllDiskBackingsAndDisallowSharing
+
+
 Creating a VM
 =============
 
@@ -622,6 +675,7 @@ Example of a complete profile:
           Hard disk 0:
             controller: 'SCSI controller 0'
             size: 20
+            mode: 'independent_nonpersistent'
         cd:
           CD/DVD drive 0:
             controller: 'IDE 0'
@@ -638,3 +692,30 @@ Example of a complete profile:
     be available. In such cases, the closest match to another ``image`` should
     be used. In the example above, a Debian 8 VM is created using the image
     ``debian7_64Guest`` which is for a Debian 7 guest.
+
+
+Specifying disk backing mode
+============================
+
+.. versionadded:: 2016.3.5
+
+Disk backing mode can now be specified when cloning a VM. This option
+can be set in the cloud profile as shown in example below:
+
+.. code-block:: yaml
+
+    my-vm:
+      provider: esx01
+      datastore: esx01-datastore
+      resourcepool: Resources
+      folder: vm
+
+
+      devices:
+        disk:
+          Hard disk 1:
+            mode: 'independent_nonpersistent'
+            size: 42
+
+          Hard disk 2:
+            mode: 'independent_nonpersistent'

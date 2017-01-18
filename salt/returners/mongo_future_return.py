@@ -73,7 +73,6 @@ import salt.utils.jid
 import salt.returners
 import salt.ext.six as six
 
-
 # Import third party libs
 try:
     import pymongo
@@ -91,7 +90,7 @@ __virtualname__ = 'mongo'
 
 def __virtual__():
     if not HAS_PYMONGO:
-        return False
+        return False, 'Could not import mongo returner; pymongo is not installed.'
     return __virtualname__
 
 
@@ -157,10 +156,12 @@ def _get_conn(ret):
             mdb.saltReturns.create_index('minion')
             mdb.saltReturns.create_index('jid')
             mdb.jobs.create_index('jid')
+            mdb.events.create_index('tag')
         else:
             mdb.saltReturns.ensure_index('minion')
             mdb.saltReturns.ensure_index('jid')
             mdb.jobs.ensure_index('jid')
+            mdb.events.ensure_index('tag')
 
     return conn, mdb
 
@@ -199,7 +200,7 @@ def returner(ret):
         mdb.saltReturns.insert(sdata.copy())
 
 
-def save_load(jid, load):
+def save_load(jid, load, minions=None):
     '''
     Save the load for a given job id
     '''
@@ -211,13 +212,19 @@ def save_load(jid, load):
         mdb.jobs.insert(load.copy())
 
 
+def save_minions(jid, minions, syndic_id=None):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass
+
+
 def get_load(jid):
     '''
     Return the load associated with a given job id
     '''
     conn, mdb = _get_conn(ret=None)
-    ret = mdb.jobs.find_one({'jid': jid}, {'_id': 0})
-    return ret['load']
+    return mdb.jobs.find_one({'jid': jid}, {'_id': 0})
 
 
 def get_jid(jid):
@@ -278,3 +285,21 @@ def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     Do any work necessary to prepare a JID, including sending a custom id
     '''
     return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid()
+
+
+def event_return(events):
+    '''
+    Return events to Mongodb server
+    '''
+    conn, mdb = _get_conn(ret=None)
+
+    if isinstance(events, list):
+        events = events[0]
+
+    if isinstance(events, dict):
+        log.debug(events)
+
+        if float(version) > 2.3:
+            mdb.events.insert_one(events.copy())
+        else:
+            mdb.events.insert(events.copy())

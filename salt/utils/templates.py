@@ -189,7 +189,7 @@ def wrap_tmpl_func(render_str):
         else:
             if to_str:  # then render as string
                 return dict(result=True, data=output)
-            with tempfile.NamedTemporaryFile('wb', delete=False) as outf:
+            with tempfile.NamedTemporaryFile('wb', delete=False, prefix=salt.utils.files.TEMPFILE_PREFIX) as outf:
                 outf.write(SLS_ENCODER(output)[0])
                 # Note: If nothing is replaced or added by the rendering
                 #       function, then the contents of the output file will
@@ -278,8 +278,10 @@ def _get_jinja_error(trace, context=None):
     if add_log:
         if template_path:
             out = '\n{0}\n'.format(msg.splitlines()[0])
+            with salt.utils.fopen(template_path) as fp_:
+                template_contents = fp_.read()
             out += salt.utils.get_context(
-                salt.utils.fopen(template_path).read(),
+                template_contents,
                 line,
                 marker='    <======================')
         else:

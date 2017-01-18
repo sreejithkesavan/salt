@@ -5,10 +5,9 @@ Orchestrate Runner
 ==================
 
 Orchestration is accomplished in salt primarily through the :ref:`Orchestrate
-Runner <orchestrate-runner>`. Added in version 0.17.0, this Salt :doc:`Runner
-</ref/runners/index>` can use the full suite of :doc:`requisites
-</ref/states/requisites>` available in states, and can also execute
-states/functions using salt-ssh.
+Runner <orchestrate-runner>`. Added in version 0.17.0, this Salt :ref:`Runner
+<runners>` can use the full suite of :ref:`requisites` available in states,
+and can also execute states/functions using salt-ssh.
 
 The Orchestrate Runner
 ----------------------
@@ -20,7 +19,7 @@ The Orchestrate Runner
   The Orchestrate Runner (originally called the state.sls runner) offers all
   the functionality of the OverState, but with some advantages:
 
-  * All :doc:`requisites </ref/states/requisites>` available in states can be
+  * All :ref:`requisites` available in states can be
     used.
   * The states/functions will also work on salt-ssh minions.
 
@@ -69,6 +68,26 @@ apply the states defined in that file.
     with the :mod:`state.sls <salt.modules.state.sls>` execution function. In
     versions 0.17.0 through 2014.1.0, ``state.sls`` must be used.
 
+Masterless Orchestration
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 2016.11.0
+
+To support salt orchestration on masterless minions, the Orchestrate Runner is
+available as an execution module. The syntax for masterless orchestration is
+exactly the same, but it uses the ``salt-call`` command and the minion
+configuration must contain the ``file_mode: local`` option. Alternatively,
+use ``salt-call --local`` on the command line.
+
+.. code-block:: bash
+
+    salt-call --local state.orchestrate orch.webserver
+
+.. note::
+
+    Masterless orchestration supports only the ``salt.state`` command in an
+    sls file; it does not (currently) support the ``salt.function`` command.
+
 Examples
 ~~~~~~~~
 
@@ -89,6 +108,22 @@ To execute a function, use :mod:`salt.function <salt.states.saltmod.function>`:
 .. code-block:: bash
 
     salt-run state.orchestrate orch.cleanfoo
+
+If you omit the "name" argument, the ID of the state will be the default name,
+or in the case of ``salt.function``, the execution module function to run. You
+can specify the "name" argument to avoid conflicting IDs:
+
+.. code-block:: yaml
+
+    copy_some_file:
+      salt.function:
+        - name: file.copy
+        - tgt: '*'
+        - arg:
+          - /path/to/file
+          - /tmp/copy_of_file
+        - kwarg:
+            remove_existing: true
 
 State
 ^^^^^
@@ -130,16 +165,17 @@ More Complex Orchestration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Many states/functions can be configured in a single file, which when combined
-with the full suite of :doc:`requisites </ref/states/requisites>`, can be used
+with the full suite of :ref:`requisites`, can be used
 to easily configure complex orchestration tasks. Additionally, the
 states/functions will be executed in the order in which they are defined,
-unless prevented from doing so by any :doc:`requisites
-</ref/states/requisites>`, as is the default in SLS files since 0.17.0.
+unless prevented from doing so by any :ref:`requisites`, as is the default in
+SLS files since 0.17.0.
 
 .. code-block:: yaml
 
-    cmd.run:
+    bootstrap_servers:
       salt.function:
+        - name: cmd.run
         - tgt: 10.0.0.0/24
         - tgt_type: ipcidr
         - arg:

@@ -3,7 +3,8 @@ Description=The Salt Master Server
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 LimitNOFILE=8192
 ExecStart=/usr/bin/salt-syndic
 

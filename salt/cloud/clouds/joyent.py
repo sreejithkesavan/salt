@@ -19,7 +19,7 @@ Set up the cloud configuration at ``/etc/salt/cloud.providers`` or
       # The location of the ssh private key that can log into the new VM
       private_key: /root/mykey.pem
       # The name of the private key
-      private_key: mykey
+      keyname: mykey
 
 When creating your profiles for the joyent cloud, add the location attribute to
 the profile, this will automatically get picked up when performing tasks
@@ -29,7 +29,7 @@ associated with that vm. An example profile might look like:
 
       joyent_512:
         provider: my-joyent-config
-        size: Extra Small 512 MB
+        size: g4-highcpu-512M
         image: centos-6
         location: us-east-1
 
@@ -107,8 +107,6 @@ VALID_RESPONSE_CODES = [
     http_client.NO_CONTENT
 ]
 
-DEFAULT_NETWORKS = ['Joyent-SDC-Public']
-
 
 # Only load in this module if the Joyent configurations are in place
 def __virtual__():
@@ -180,10 +178,11 @@ def query_instance(vm_=None, call=None):
             'The query_instance action must be called with -a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'querying instance',
         'salt/cloud/{0}/querying'.format(vm_['name']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -198,7 +197,7 @@ def query_instance(vm_=None, call=None):
 
         if isinstance(data, dict) and 'error' in data:
             log.warning(
-                'There was an error in the query {0}'.format(data['error'])  # pylint: disable=E1126
+                'There was an error in the query {0}'.format(data.get('error'))
             )
             # Trigger a failure in the wait for IP function
             return False
@@ -261,15 +260,16 @@ def create(vm_):
         'private_key', vm_, __opts__, search_global=False, default=None
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -284,18 +284,21 @@ def create(vm_):
     salt.utils.cloud.check_name(vm_['name'], 'a-zA-Z0-9-.')
     kwargs = {
         'name': vm_['name'],
-        'networks': vm_.get('networks', DEFAULT_NETWORKS),
         'image': get_image(vm_),
         'size': get_size(vm_),
         'location': vm_.get('location', DEFAULT_LOCATION)
-
     }
+    # Let's not assign a default here; only assign a network value if
+    # one is explicitly configured
+    if 'networks' in vm_:
+        kwargs['networks'] = vm_.get('networks')
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(vm_['name']),
-        {'kwargs': kwargs},
+        args={'kwargs': kwargs},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -319,17 +322,18 @@ def create(vm_):
     vm_['key_filename'] = key_filename
     vm_['ssh_host'] = data[1]['primaryIp']
 
-    salt.utils.cloud.bootstrap(vm_, __opts__)
+    __utils__['cloud.bootstrap'](vm_, __opts__)
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        {
+        args={
             'name': vm_['name'],
             'profile': vm_['profile'],
             'provider': vm_['driver'],
         },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -344,14 +348,16 @@ def create_node(**kwargs):
     size = kwargs['size']
     image = kwargs['image']
     location = kwargs['location']
-    networks = kwargs['networks']
+    networks = kwargs.get('networks')
 
-    data = json.dumps({
+    create_data = {
         'name': name,
         'package': size['name'],
         'image': image['name'],
-        'networks': networks
-    })
+    }
+    if networks is not None:
+        create_data['networks'] = networks
+    data = json.dumps(create_data)
 
     try:
         ret = query(command='/my/machines', data=data, method='POST',
@@ -388,11 +394,12 @@ def destroy(name, call=None):
             '-a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -400,16 +407,17 @@ def destroy(name, call=None):
     ret = query(command='my/machines/{0}'.format(node['id']),
                  location=node['location'], method='DELETE')
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
 
     return ret[0] in VALID_RESPONSE_CODES
 

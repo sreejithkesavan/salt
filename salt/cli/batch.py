@@ -27,12 +27,14 @@ class Batch(object):
     '''
     Manage the execution of batch runs
     '''
-    def __init__(self, opts, eauth=None, quiet=False):
+    def __init__(self, opts, eauth=None, quiet=False, parser=None):
         self.opts = opts
         self.eauth = eauth if eauth else {}
+        self.pub_kwargs = eauth if eauth else {}
         self.quiet = quiet
         self.local = salt.client.get_local_client(opts['conf_file'])
-        self.minions, self.ping_gen = self.__gather_minions()
+        self.minions, self.ping_gen, self.down_minions = self.__gather_minions()
+        self.options = parser
 
     def __gather_minions(self):
         '''
@@ -50,17 +52,27 @@ class Batch(object):
         else:
             args.append(self.opts.get('expr_form', 'glob'))
 
-        ping_gen = self.local.cmd_iter(*args, **self.eauth)
+        self.pub_kwargs['yield_pub_data'] = True
+        ping_gen = self.local.cmd_iter(*args, **self.pub_kwargs)
 
+        # Broadcast to targets
         fret = set()
+        nret = set()
         try:
             for ret in ping_gen:
-                m = next(six.iterkeys(ret))
-                if m is not None:
-                    fret.add(m)
-            return (list(fret), ping_gen)
+                if ('minions' and 'jid') in ret:
+                    for minion in ret['minions']:
+                        nret.add(minion)
+                    continue
+                else:
+                    m = next(six.iterkeys(ret))
+                    if m is not None:
+                        fret.add(m)
+            return (list(fret), ping_gen, nret.difference(fret))
         except StopIteration:
-            raise salt.exceptions.SaltClientError('No minions matched the target.')
+            if not self.quiet:
+                print_cli('No minions matched the target.')
+        return list(fret), ping_gen
 
     def get_bnum(self):
         '''
@@ -100,6 +112,9 @@ class Batch(object):
                 'list',
                 ]
         bnum = self.get_bnum()
+        # No targets to run
+        if not self.minions:
+            return
         to_run = copy.deepcopy(self.minions)
         active = []
         ret = {}
@@ -108,6 +123,13 @@ class Batch(object):
         bwait = self.opts.get('batch_wait', 0)
         wait = []
 
+        if self.options:
+            show_jid = self.options.show_jid
+            show_verbose = self.options.verbose
+        else:
+            show_jid = False
+            show_verbose = False
+
         # the minion tracker keeps track of responses and iterators
         # - it removes finished iterators from iters[]
         # - if a previously detected minion does not respond, its
@@ -115,6 +137,11 @@ class Batch(object):
         # - unresponsive minions are removed from active[] to make
         #   sure that the main while loop finishes even with unresp minions
         minion_tracker = {}
+
+        # We already know some minions didn't respond to the ping, so inform
+        # the user we won't be attempting to run a job on them
+        for down_minion in self.down_minions:
+            print_cli('Minion {0} did not respond. No job will be sent.'.format(down_minion))
 
         # Iterate while we still have things to execute
         while len(ret) < len(self.minions):
@@ -145,6 +172,8 @@ class Batch(object):
                                 *args,
                                 raw=self.opts.get('raw', False),
                                 ret=self.opts.get('return', ''),
+                                show_jid=show_jid,
+                                verbose=show_verbose,
                                 **self.eauth)
                 # add it to our iterators and to the minion_tracker
                 iters.append(new_iter)
@@ -179,12 +208,18 @@ class Batch(object):
                                 break
                             continue
                         if self.opts.get('raw'):
-                            parts.update({part['id']: part})
-                            minion_tracker[queue]['minions'].remove(part['id'])
+                            parts.update({part['data']['id']: part})
+                            if part['data']['id'] in minion_tracker[queue]['minions']:
+                                minion_tracker[queue]['minions'].remove(part['data']['id'])
+                            else:
+                                print_cli('minion {0} was already deleted from tracker, probably a duplicate key'.format(part['id']))
                         else:
                             parts.update(part)
                             for id in part.keys():
-                                minion_tracker[queue]['minions'].remove(id)
+                                if id in minion_tracker[queue]['minions']:
+                                    minion_tracker[queue]['minions'].remove(id)
+                                else:
+                                    print_cli('minion {0} was already deleted from tracker, probably a duplicate key'.format(id))
                 except StopIteration:
                     # if a iterator is done:
                     # - set it to inactive
@@ -207,10 +242,11 @@ class Batch(object):
                     if bwait:
                         wait.append(datetime.now() + timedelta(seconds=bwait))
                 if self.opts.get('raw'):
+                    ret[minion] = data
                     yield data
                 else:
-                    ret[minion] = data['ret']
-                    yield {minion: data['ret']}
+                    ret[minion] = data
+                    yield {minion: data}
                 if not self.quiet:
                     ret[minion] = data['ret']
                     data[minion] = data.pop('ret')

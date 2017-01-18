@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
 Pkgutil support for Solaris
+
+.. important::
+    If you feel that Salt should be using this module to manage packages on a
+    minion, and it is using a different module (or gives an error similar to
+    *'pkg.install' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 from __future__ import absolute_import
 
@@ -63,7 +69,7 @@ def upgrade_available(name):
     return ''
 
 
-def list_upgrades(refresh=True):
+def list_upgrades(refresh=True, **kwargs):  # pylint: disable=W0613
     '''
     List all available package upgrades on this system
 

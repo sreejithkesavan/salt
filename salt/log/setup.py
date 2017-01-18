@@ -170,11 +170,11 @@ class SaltLogRecord(logging.LogRecord):
         # pylint: enable=E1321
 
 
-class SaltColorLogRecord(logging.LogRecord):
+class SaltColorLogRecord(SaltLogRecord):
     def __init__(self, *args, **kwargs):
-        logging.LogRecord.__init__(self, *args, **kwargs)
-        reset = TextFormat('reset')
+        SaltLogRecord.__init__(self, *args, **kwargs)
 
+        reset = TextFormat('reset')
         clevel = LOG_COLORS['levels'].get(self.levelname, reset)
         cmsg = LOG_COLORS['msgs'].get(self.levelname, reset)
 
@@ -184,11 +184,11 @@ class SaltColorLogRecord(logging.LogRecord):
                                           reset)
         self.colorlevel = '%s[%-8s]%s' % (clevel,
                                           self.levelname,
-                                          TextFormat('reset'))
+                                          reset)
         self.colorprocess = '%s[%5s]%s' % (LOG_COLORS['process'],
                                            self.process,
                                            reset)
-        self.colormsg = '%s%s%s' % (cmsg, self.msg, reset)
+        self.colormsg = '%s%s%s' % (cmsg, self.getMessage(), reset)
         # pylint: enable=E1321
 
 
@@ -631,6 +631,19 @@ def setup_logfile_logger(log_path, log_level='error', log_format=None,
             shutdown_multiprocessing_logging_listener()
             sys.exit(2)
     else:
+        # make sure, the logging directory exists and attempt to create it if necessary
+        log_dir = os.path.dirname(log_path)
+        if not os.path.exists(log_dir):
+            logging.getLogger(__name__).info(
+                'Log directory not found, trying to create it: {0}'.format(log_dir)
+            )
+            try:
+                os.makedirs(log_dir, mode=0o700)
+            except OSError as ose:
+                logging.getLogger(__name__).warning(
+                    'Failed to create directory for log file: {0} ({1})'.format(log_dir, ose)
+                )
+                return
         try:
             # Logfile logging is UTF-8 on purpose.
             # Since salt uses YAML and YAML uses either UTF-8 or UTF-16, if a
@@ -679,10 +692,7 @@ def setup_extended_logging(opts):
     initial_handlers = logging.root.handlers[:]
 
     # Load any additional logging handlers
-    # Pack the handlers with exec modules and grains
-    funcs = salt.loader.minion_mods(opts)
-    grains = salt.loader.grains(opts)
-    providers = salt.loader.log_handlers(opts, functions=funcs, grains=grains)
+    providers = salt.loader.log_handlers(opts)
 
     # Let's keep track of the new logging handlers so we can sync the stored
     # log records with them
@@ -921,11 +931,29 @@ def patch_python_logging_handlers():
 def __process_multiprocessing_logging_queue(opts, queue):
     import salt.utils
     salt.utils.appendproctitle('MultiprocessingLoggingQueue')
+
+    # Assign UID/GID of user to proc if set
+    from salt.utils.verify import check_user
+    user = opts.get('user')
+    if user:
+        check_user(user)
+
     if salt.utils.is_windows():
         # On Windows, creating a new process doesn't fork (copy the parent
-        # process image). Due to this, we need to setup extended logging
+        # process image). Due to this, we need to setup all of our logging
         # inside this process.
         setup_temp_logger()
+        setup_console_logger(
+            log_level=opts.get('log_level'),
+            log_format=opts.get('log_fmt_console'),
+            date_format=opts.get('log_datefmt_console')
+        )
+        setup_logfile_logger(
+            opts.get('log_file'),
+            log_level=opts.get('log_level_logfile'),
+            log_format=opts.get('log_fmt_logfile'),
+            date_format=opts.get('log_datefmt_logfile')
+        )
         setup_extended_logging(opts)
     while True:
         try:

@@ -8,12 +8,11 @@ Discover all instances of unittest.TestCase in this directory.
 # Import python libs
 from __future__ import absolute_import, print_function
 import os
-import tempfile
 import time
 
 # Import salt libs
 from integration import TestDaemon, TMP  # pylint: disable=W0403
-from integration import INTEGRATION_TEST_DIR
+from integration import SYS_TMP_DIR, INTEGRATION_TEST_DIR
 from integration import CODE_DIR as SALT_ROOT
 import salt.utils
 
@@ -23,6 +22,12 @@ if not salt.utils.is_windows():
 # Import Salt Testing libs
 from salttesting.parser import PNUM, print_header
 from salttesting.parser.cover import SaltCoverageTestingParser
+try:
+    from salttesting.helpers import terminate_process_pid
+    RUNTESTS_WITH_HARD_KILL = True
+except ImportError:
+    from integration import terminate_process_pid
+    RUNTESTS_WITH_HARD_KILL = False
 
 XML_OUTPUT_DIR = os.environ.get(
     'SALT_XML_TEST_REPORTS_DIR',
@@ -40,7 +45,17 @@ try:
 except OSError as err:
     print('Failed to change directory to salt\'s source: {0}'.format(err))
 
-REQUIRED_OPEN_FILES = 3072
+# Soft and hard limits on max open filehandles
+MAX_OPEN_FILES = {
+    'integration': {
+        'soft_limit': 3072,
+        'hard_limit': 4096,
+    },
+    'unit': {
+        'soft_limit': 1024,
+        'hard_limit': 2048,
+    },
+}
 
 # Combine info from command line options and test suite directories.  A test
 # suite is a python package of test modules relative to the tests directory.
@@ -69,6 +84,9 @@ TEST_SUITES = {
     'renderers':
        {'display_name': 'Renderers',
         'path': 'integration/renderers'},
+    'returners':
+        {'display_name': 'Returners',
+         'path': 'integration/returners'},
     'loader':
        {'display_name': 'Loader',
         'path': 'integration/loader'},
@@ -89,7 +107,10 @@ TEST_SUITES = {
         'path': 'integration/cloud/providers'},
     'minion':
         {'display_name': 'Minion',
-         'path': 'integration/minion'}
+         'path': 'integration/minion'},
+    'reactor':
+        {'display_name': 'Reactor',
+         'path': 'integration/reactor'},
 }
 
 
@@ -206,6 +227,7 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         self.test_selection_group.add_option(
             '-s',
             '--shell',
+            '--shell-tests',
             dest='shell',
             default=False,
             action='store_true',
@@ -214,6 +236,7 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         self.test_selection_group.add_option(
             '-r',
             '--runners',
+            '--runner-tests',
             dest='runners',
             default=False,
             action='store_true',
@@ -222,10 +245,18 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         self.test_selection_group.add_option(
             '-R',
             '--renderers',
+            '--renderer-tests',
             dest='renderers',
             default=False,
             action='store_true',
             help='Run salt/renderers/*.py tests'
+        )
+        self.test_selection_group.add_option(
+            '--reactor',
+            dest='reactor',
+            default=False,
+            action='store_true',
+            help='Run salt/reactor/*.py tests'
         )
         self.test_selection_group.add_option(
             '--minion',
@@ -236,8 +267,17 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
             help='Run tests for minion'
         )
         self.test_selection_group.add_option(
+            '--returners',
+            dest='returners',
+            default=False,
+            action='store_true',
+            help='Run salt/returners/*.py tests'
+        )
+        self.test_selection_group.add_option(
             '-l',
             '--loader',
+            '--loader-tests',
+            dest='loader',
             default=False,
             action='store_true',
             help='Run loader tests'
@@ -252,6 +292,7 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
             help='Run unit tests'
         )
         self.test_selection_group.add_option(
+            '--fileserver',
             '--fileserver-tests',
             dest='fileserver',
             default=False,
@@ -261,6 +302,8 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         self.test_selection_group.add_option(
             '-w',
             '--wheel',
+            '--wheel-tests',
+            dest='wheel',
             action='store_true',
             default=False,
             help='Run wheel tests'
@@ -268,6 +311,8 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         self.test_selection_group.add_option(
             '-o',
             '--outputter',
+            '--outputter-tests',
+            dest='outputter',
             action='store_true',
             default=False,
             help='Run outputter tests'
@@ -284,6 +329,8 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         )
         self.test_selection_group.add_option(
             '--ssh',
+            '--ssh-tests',
+            dest='ssh',
             action='store_true',
             default=False,
             help='Run salt-ssh tests. These tests will spin up a temporary '
@@ -292,6 +339,7 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
         )
         self.test_selection_group.add_option(
             '-A',
+            '--api',
             '--api-tests',
             dest='api',
             action='store_true',
@@ -344,7 +392,7 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
 
     def start_daemons_only(self):
         if not salt.utils.is_windows():
-            self.prep_filehandles()
+            self.set_filehandle_limits('integration')
         try:
             print_header(
                 ' * Setting up Salt daemons for interactive use',
@@ -357,13 +405,20 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
             print_header(' * Salt daemons started')
             master_conf = TestDaemon.config('master')
             minion_conf = TestDaemon.config('minion')
+            sub_minion_conf = TestDaemon.config('sub_minion')
             syndic_conf = TestDaemon.config('syndic')
             syndic_master_conf = TestDaemon.config('syndic_master')
 
-            print_header(' * Syndic master configuration values', top=False)
+            print_header(' * Syndic master configuration values (MoM)', top=False)
             print('interface: {0}'.format(syndic_master_conf['interface']))
             print('publish port: {0}'.format(syndic_master_conf['publish_port']))
             print('return port: {0}'.format(syndic_master_conf['ret_port']))
+            print('\n')
+
+            print_header(' * Syndic configuration values', top=True)
+            print('interface: {0}'.format(syndic_conf['interface']))
+            print('syndic master: {0}'.format(syndic_conf['syndic_master']))
+            print('syndic master port: {0}'.format(syndic_conf['syndic_master_port']))
             print('\n')
 
             print_header(' * Master configuration values', top=True)
@@ -374,45 +429,73 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
 
             print_header(' * Minion configuration values', top=True)
             print('interface: {0}'.format(minion_conf['interface']))
+            print('master: {0}'.format(minion_conf['master']))
+            print('master port: {0}'.format(minion_conf['master_port']))
+            if minion_conf['ipc_mode'] == 'tcp':
+                print('tcp pub port: {0}'.format(minion_conf['tcp_pub_port']))
+                print('tcp pull port: {0}'.format(minion_conf['tcp_pull_port']))
             print('\n')
 
-            print_header(' * Syndic configuration values', top=True)
-            print('interface: {0}'.format(syndic_conf['interface']))
-            print('syndic master port: {0}'.format(syndic_conf['syndic_master']))
+            print_header(' * Sub Minion configuration values', top=True)
+            print('interface: {0}'.format(sub_minion_conf['interface']))
+            print('master: {0}'.format(sub_minion_conf['master']))
+            print('master port: {0}'.format(sub_minion_conf['master_port']))
+            if sub_minion_conf['ipc_mode'] == 'tcp':
+                print('tcp pub port: {0}'.format(sub_minion_conf['tcp_pub_port']))
+                print('tcp pull port: {0}'.format(sub_minion_conf['tcp_pull_port']))
             print('\n')
 
             print_header(' Your client configuration is at {0}'.format(TestDaemon.config_location()))
-            print('To access the minion: `salt -c {0} minion test.ping'.format(TestDaemon.config_location()))
+            print('To access the minion: salt -c {0} minion test.ping'.format(TestDaemon.config_location()))
 
             while True:
                 time.sleep(1)
 
-    def prep_filehandles(self):
-        smax_open_files, hmax_open_files = resource.getrlimit(
-            resource.RLIMIT_NOFILE
-        )
-        if smax_open_files < REQUIRED_OPEN_FILES:
+    def set_filehandle_limits(self, limits='integration'):
+        '''
+        Set soft and hard limits on open file handles at required thresholds
+        for integration tests or unit tests
+        '''
+        # Get current limits
+        prev_soft, prev_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+        # Get required limits
+        min_soft = MAX_OPEN_FILES[limits]['soft_limit']
+        min_hard = MAX_OPEN_FILES[limits]['hard_limit']
+
+        # Check minimum required limits
+        set_limits = False
+        if prev_soft < min_soft:
+            soft = min_soft
+            set_limits = True
+        else:
+            soft = prev_soft
+
+        if prev_hard < min_hard:
+            hard = min_hard
+            set_limits = True
+        else:
+            hard = prev_hard
+
+        # Increase limits
+        if set_limits:
             print(
-                ' * Max open files setting is too low({0}) for running the '
-                'tests'.format(smax_open_files)
+                ' * Max open files settings is too low (soft: {0}, hard: {1}) '
+                'for running the tests'.format(prev_soft, prev_hard)
             )
             print(
-                ' * Trying to raise the limit to {0}'.format(REQUIRED_OPEN_FILES)
+                ' * Trying to raise the limits to soft: '
+                '{0}, hard: {1}'.format(soft, hard)
             )
-            if hmax_open_files < 4096:
-                hmax_open_files = 4096  # Decent default?
             try:
-                resource.setrlimit(
-                    resource.RLIMIT_NOFILE,
-                    (REQUIRED_OPEN_FILES, hmax_open_files)
-                )
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
             except Exception as err:
                 print(
-                    'ERROR: Failed to raise the max open files setting -> '
+                    'ERROR: Failed to raise the max open files settings -> '
                     '{0}'.format(err)
                 )
                 print('Please issue the following command on your console:')
-                print('  ulimit -n {0}'.format(REQUIRED_OPEN_FILES))
+                print('  ulimit -n {0}'.format(soft))
                 self.exit()
             finally:
                 print('~' * getattr(self.options, 'output_columns', PNUM))
@@ -439,7 +522,7 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
             # running
             return [True]
         if not salt.utils.is_windows():
-            self.prep_filehandles()
+            self.set_filehandle_limits('integration')
 
         try:
             print_header(
@@ -484,6 +567,9 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
 
         status = []
         if self.options.unit:
+            # MacOS needs more open filehandles for running unit test suite
+            self.set_filehandle_limits('unit')
+
             results = self.run_suite(
                 os.path.join(TEST_DIR, 'unit'), 'Unit', '*_test.py'
             )
@@ -499,6 +585,11 @@ class SaltTestsuiteParser(SaltCoverageTestingParser):
             status.append(results)
         return status
 
+    def print_overall_testsuite_report(self):
+        if RUNTESTS_WITH_HARD_KILL is False:
+            terminate_process_pid(os.getpid(), only_children=True)
+        SaltCoverageTestingParser.print_overall_testsuite_report(self)
+
 
 def main():
     '''
@@ -508,7 +599,7 @@ def main():
         parser = SaltTestsuiteParser(
             TEST_DIR,
             xml_output_dir=XML_OUTPUT_DIR,
-            tests_logfile=os.path.join(tempfile.gettempdir(), 'salt-runtests.log')
+            tests_logfile=os.path.join(SYS_TMP_DIR, 'salt-runtests.log')
         )
         parser.parse_args()
 

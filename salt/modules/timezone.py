@@ -32,7 +32,7 @@ def __virtual__():
 
     if salt.utils.is_darwin():
         return (False, 'The timezone execution module failed to load: '
-                       'mac_timezone.py should replace this module on OS X.'
+                       'mac_timezone.py should replace this module on macOS.'
                        'There was a problem loading mac_timezone.py.')
 
     return __virtualname__
@@ -85,6 +85,8 @@ def _get_zone_etc_localtime():
             return olson_name[tzdir_len:]
     except OSError as exc:
         if exc.errno == errno.ENOENT:
+            if 'FreeBSD' in __grains__['os_family']:
+                return get_zonecode()
             raise CommandExecutionError(tzfile + ' does not exist')
         elif exc.errno == errno.EINVAL:
             log.warning(
@@ -122,7 +124,6 @@ def get_zone():
 
         salt '*' timezone.get_zone
     '''
-    cmd = ''
     if salt.utils.which('timedatectl'):
         ret = _timedatectl()
 
@@ -140,13 +141,13 @@ def get_zone():
         if __grains__['os'].lower() == 'centos':
             return _get_zone_etc_localtime()
         os_family = __grains__['os_family']
-        for family in ('RedHat', 'Suse'):
+        for family in ('RedHat', 'SUSE'):
             if family in os_family:
                 return _get_zone_sysconfig()
         for family in ('Debian', 'Gentoo'):
             if family in os_family:
                 return _get_zone_etc_timezone()
-        if os_family in ('FreeBSD', 'OpenBSD', 'NetBSD'):
+        if os_family in ('FreeBSD', 'OpenBSD', 'NetBSD', 'NILinuxRT'):
             return _get_zone_etc_localtime()
         elif 'Solaris' in os_family:
             return _get_zone_solaris()
@@ -219,9 +220,9 @@ def set_zone(timezone):
     if 'RedHat' in __grains__['os_family']:
         __salt__['file.sed'](
             '/etc/sysconfig/clock', '^ZONE=.*', 'ZONE="{0}"'.format(timezone))
-    elif 'Suse' in __grains__['os_family']:
+    elif 'SUSE' in __grains__['os_family']:
         __salt__['file.sed'](
-            '/etc/sysconfig/clock', '^ZONE=.*', 'ZONE="{0}"'.format(timezone))
+            '/etc/sysconfig/clock', '^TIMEZONE=.*', 'TIMEZONE="{0}"'.format(timezone))
     elif 'Debian' in __grains__['os_family']:
         with salt.utils.fopen('/etc/timezone', 'w') as ofh:
             ofh.write(timezone.strip())
@@ -295,7 +296,6 @@ def get_hwclock():
 
         salt '*' timezone.get_hwclock
     '''
-    cmd = ''
     if salt.utils.which('timedatectl'):
         ret = _timedatectl()
         for line in (x.strip() for x in ret['stdout'].splitlines()):
@@ -314,10 +314,11 @@ def get_hwclock():
 
     else:
         os_family = __grains__['os_family']
-        for family in ('RedHat', 'Suse'):
+        for family in ('RedHat', 'SUSE'):
             if family in os_family:
                 cmd = ['tail', '-n', '1', '/etc/adjtime']
                 return __salt__['cmd.run'](cmd, python_shell=False)
+
         if 'Debian' in __grains__['os_family']:
             # Original way to look up hwclock on Debian-based systems
             try:
@@ -336,25 +337,33 @@ def get_hwclock():
             # Since Wheezy
             cmd = ['tail', '-n', '1', '/etc/adjtime']
             return __salt__['cmd.run'](cmd, python_shell=False)
-        elif 'Gentoo' in __grains__['os_family']:
-            offset_file = '/etc/conf.d/hwclock'
-            try:
-                with salt.utils.fopen(offset_file, 'r') as fp_:
-                    for line in fp_:
-                        if line.startswith('clock='):
-                            line = line.rstrip('\n')
-                            return line.split('=')[-1].strip('\'"')
-                    raise CommandExecutionError(
-                        'Offset information not found in {0}'.format(
-                            offset_file
+
+        if 'Gentoo' in __grains__['os_family']:
+            if not os.path.exists('/etc/adjtime'):
+                offset_file = '/etc/conf.d/hwclock'
+                try:
+                    with salt.utils.fopen(offset_file, 'r') as fp_:
+                        for line in fp_:
+                            if line.startswith('clock='):
+                                line = line.rstrip('\n')
+                                line = line.split('=')[-1].strip('\'"')
+                                if line == 'UTC':
+                                    return line
+                                if line == 'local':
+                                    return 'LOCAL'
+                        raise CommandExecutionError(
+                            'Correct offset value not found in {0}'
+                            .format(offset_file)
                         )
+                except IOError as exc:
+                    raise CommandExecutionError(
+                        'Problem reading offset file {0}: {1}'
+                        .format(offset_file, exc.strerror)
                     )
-            except IOError as exc:
-                raise CommandExecutionError(
-                    'Problem reading offset file {0}: {1}'
-                    .format(offset_file, exc.strerror)
-                )
-        elif 'Solaris' in __grains__['os_family']:
+            cmd = ['tail', '-n', '1', '/etc/adjtime']
+            return __salt__['cmd.run'](cmd, python_shell=False)
+
+        if 'Solaris' in __grains__['os_family']:
             offset_file = '/etc/rtc_config'
             try:
                 with salt.utils.fopen(offset_file, 'r') as fp_:
@@ -413,15 +422,21 @@ def set_hwclock(clock):
     elif 'RedHat' in __grains__['os_family']:
         __salt__['file.sed'](
             '/etc/sysconfig/clock', '^ZONE=.*', 'ZONE="{0}"'.format(timezone))
-    elif 'Suse' in __grains__['os_family']:
+    elif 'SUSE' in __grains__['os_family']:
         __salt__['file.sed'](
-            '/etc/sysconfig/clock', '^ZONE=.*', 'ZONE="{0}"'.format(timezone))
+            '/etc/sysconfig/clock', '^TIMEZONE=.*', 'TIMEZONE="{0}"'.format(timezone))
     elif 'Debian' in __grains__['os_family']:
         if clock == 'UTC':
             __salt__['file.sed']('/etc/default/rcS', '^UTC=.*', 'UTC=yes')
         elif clock == 'localtime':
             __salt__['file.sed']('/etc/default/rcS', '^UTC=.*', 'UTC=no')
     elif 'Gentoo' in __grains__['os_family']:
+        if clock not in ('UTC', 'localtime'):
+            raise SaltInvocationError(
+                'Only \'UTC\' and \'localtime\' are allowed'
+            )
+        if clock == 'localtime':
+            clock = 'local'
         __salt__['file.sed'](
             '/etc/conf.d/hwclock', '^clock=.*', 'clock="{0}"'.format(clock))
 

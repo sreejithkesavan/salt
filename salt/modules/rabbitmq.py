@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 # Import python libs
 import json
+import re
 import logging
 import random
 import string
@@ -134,7 +135,8 @@ def list_users(runas=None):
         python_shell=False)
 
     # func to get tags from string such as "[admin, monitoring]"
-    func = lambda string: set([tag.strip() for tag in string[1:-1].split(',')])
+    func = lambda string: [x.strip() for x in string[1:-1].split(',')] if ',' in string else [x for x in
+                                                                                              string[1:-1].split(' ')]
     return _output_to_dict(res, func)
 
 
@@ -305,8 +307,34 @@ def check_password(name, password, runas=None):
 
         salt '*' rabbitmq.check_password rabbit_user password
     '''
+    # try to get the rabbitmq-version - adapted from _get_rabbitmq_plugin
+
     if runas is None:
         runas = salt.utils.get_user()
+
+    try:
+        res = __salt__['cmd.run'](['rabbitmqctl', 'status'], runas=runas, python_shell=False)
+        server_version = re.search(r'\{rabbit,"RabbitMQ","(.+)"\}', res)
+
+        if server_version is None:
+            raise ValueError
+
+        server_version = server_version.group(1)
+        version = [int(i) for i in server_version.split('.')]
+    except ValueError:
+        version = (0, 0, 0)
+    if len(version) < 3:
+        version = (0, 0, 0)
+
+    # rabbitmq introduced a native api to check a username and password in version 3.5.7.
+    if tuple(version) >= (3, 5, 7):
+        res = __salt__['cmd.run'](
+            ['rabbitmqctl', 'authenticate_user', name, password],
+            runas=runas,
+            output_loglevel='quiet',
+            python_shell=False)
+
+        return 'Error:' not in res
 
     cmd = ('rabbit_auth_backend_internal:check_user_login'
         '(<<"{0}">>, [{{password, <<"{1}">>}}]).').format(

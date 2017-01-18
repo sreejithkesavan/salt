@@ -244,6 +244,26 @@ def __optimize_table(name, table, **connection_args):
     return results
 
 
+def __password_column(**connection_args):
+    dbc = _connect(**connection_args)
+    if dbc is None:
+        return 'Password'
+    cur = dbc.cursor()
+    qry = ('SELECT column_name from information_schema.COLUMNS '
+           'WHERE table_schema=%(schema)s and table_name=%(table)s '
+           'and column_name=%(column)s')
+    args = {
+      'schema': 'mysql',
+      'table':  'user',
+      'column': 'Password'
+    }
+    _execute(cur, qry, args)
+    if int(cur.rowcount) > 0:
+        return 'Password'
+    else:
+        return 'authentication_string'
+
+
 def _connect(**kwargs):
     '''
     wrap authentication credentials here
@@ -770,6 +790,8 @@ def free_slave(**connection_args):
         salt '*' mysql.free_slave
     '''
     slave_db = _connect(**connection_args)
+    if slave_db is None:
+        return ''
     slave_cur = slave_db.cursor(MySQLdb.cursors.DictCursor)
     slave_cur.execute('show slave status')
     slave_status = slave_cur.fetchone()
@@ -782,6 +804,8 @@ def free_slave(**connection_args):
         # servers here, and only overriding the host option in the connect
         # function.
         master_db = _connect(**master)
+        if master_db is None:
+            return ''
         master_cur = master_db.cursor()
         master_cur.execute('flush logs')
         master_db.close()
@@ -984,7 +1008,7 @@ def db_create(name, character_set=None, collate=None, **connection_args):
     cur = dbc.cursor()
     s_name = quote_identifier(name)
     # identifiers cannot be used as values
-    qry = 'CREATE DATABASE {0}'.format(s_name)
+    qry = 'CREATE DATABASE IF NOT EXISTS {0}'.format(s_name)
     args = {}
     if character_set is not None:
         qry += ' CHARACTER SET %(character_set)s'
@@ -1082,7 +1106,7 @@ def user_exists(user,
                 password_hash=None,
                 passwordless=False,
                 unix_socket=False,
-                password_column='Password',
+                password_column=None,
                 **connection_args):
     '''
     Checks if a user exists on the MySQL server. A login can be checked to see
@@ -1114,6 +1138,9 @@ def user_exists(user,
         dbc = _connect(**connection_args)
     if dbc is None:
         return False
+
+    if not password_column:
+        password_column = __password_column(**connection_args)
 
     cur = dbc.cursor()
     qry = ('SELECT User,Host FROM mysql.user WHERE User = %(user)s AND '
@@ -1185,7 +1212,7 @@ def user_create(user,
                 password_hash=None,
                 allow_passwordless=False,
                 unix_socket=False,
-                password_column='Password',
+                password_column=None,
                 **connection_args):
     '''
     Creates a MySQL user
@@ -1236,6 +1263,9 @@ def user_create(user,
     if dbc is None:
         return False
 
+    if not password_column:
+        password_column = __password_column(**connection_args)
+
     cur = dbc.cursor()
     qry = 'CREATE USER %(user)s@%(host)s'
     args = {}
@@ -1285,6 +1315,7 @@ def user_chpass(user,
                 password_hash=None,
                 allow_passwordless=False,
                 unix_socket=None,
+                password_column=None,
                 **connection_args):
     '''
     Change password for a MySQL user
@@ -1342,8 +1373,11 @@ def user_chpass(user,
     if dbc is None:
         return False
 
+    if not password_column:
+        password_column = __password_column(**connection_args)
+
     cur = dbc.cursor()
-    qry = ('UPDATE mysql.user SET password='
+    qry = ('UPDATE mysql.user SET ' + password_column + '='
            + password_sql +
            ' WHERE User=%(user)s AND Host = %(host)s;')
     args['user'] = user
@@ -1688,7 +1722,7 @@ def grant_exists(grant,
             if grant_tokens['user'] == target_tokens['user'] and \
                     grant_tokens['database'] == target_tokens['database'] and \
                     grant_tokens['host'] == target_tokens['host'] and \
-                    set(grant_tokens['grant']) == set(target_tokens['grant']):
+                    set(grant_tokens['grant']) >= set(target_tokens['grant']):
                 return True
             else:
                 log.debug('grants mismatch \'{0}\'<>\'{1}\''.format(
@@ -1870,6 +1904,8 @@ def processlist(**connection_args):
     ret = []
 
     dbc = _connect(**connection_args)
+    if dbc is None:
+        return []
     cur = dbc.cursor()
     _execute(cur, 'SHOW FULL PROCESSLIST')
     hdr = [c[0] for c in cur.description]
@@ -1950,6 +1986,8 @@ def get_master_status(**connection_args):
     mod = sys._getframe().f_code.co_name
     log.debug('{0}<--'.format(mod))
     conn = _connect(**connection_args)
+    if conn is None:
+        return []
     rtnv = __do_query_into_hash(conn, "SHOW MASTER STATUS")
     conn.close()
 
@@ -2018,6 +2056,8 @@ def get_slave_status(**connection_args):
     mod = sys._getframe().f_code.co_name
     log.debug('{0}<--'.format(mod))
     conn = _connect(**connection_args)
+    if conn is None:
+        return []
     rtnv = __do_query_into_hash(conn, "SHOW SLAVE STATUS")
     conn.close()
 
@@ -2046,6 +2086,8 @@ def showvariables(**connection_args):
     mod = sys._getframe().f_code.co_name
     log.debug('{0}<--'.format(mod))
     conn = _connect(**connection_args)
+    if conn is None:
+        return []
     rtnv = __do_query_into_hash(conn, "SHOW VARIABLES")
     conn.close()
     if len(rtnv) == 0:
@@ -2072,6 +2114,8 @@ def showglobal(**connection_args):
     mod = sys._getframe().f_code.co_name
     log.debug('{0}<--'.format(mod))
     conn = _connect(**connection_args)
+    if conn is None:
+        return []
     rtnv = __do_query_into_hash(conn, "SHOW GLOBAL VARIABLES")
     conn.close()
     if len(rtnv) == 0:

@@ -104,12 +104,16 @@ def mode(name):
         ret['comment'] = 'SELinux mode is set to be changed to {0}'.format(
                 tmode)
         ret['result'] = None
+        ret['changes'] = {'old': mode,
+                          'new': tmode}
         return ret
 
-    mode = __salt__['selinux.setenforce'](tmode)
+    oldmode, mode = mode, __salt__['selinux.setenforce'](tmode)
     if mode == tmode:
         ret['result'] = True
         ret['comment'] = 'SELinux has been set to {0} mode'.format(tmode)
+        ret['changes'] = {'old': oldmode,
+                          'new': mode}
         return ret
     ret['comment'] = 'Failed to set SELinux to {0} mode'.format(tmode)
     return ret
@@ -198,11 +202,12 @@ def module(name, module_state='Enabled', version='any'):
                          '{1} module.'.format(module_state, module)
         ret['result'] = False
         return ret
-    if not version == 'any':
+    if version != 'any':
         installed_version = modules[name]['Version']
         if not installed_version == version:
             ret['comment'] = 'Module version is {0} and does not match ' \
-                             'the desired version of {1}'.format(installed_version, version)
+                             'the desired version of {1} or you are ' \
+                             'using semodule >= 2.4'.format(installed_version, version)
             ret['result'] = False
             return ret
     current_module_state = _refine_module_state(modules[name]['Enabled'])
@@ -211,7 +216,7 @@ def module(name, module_state='Enabled', version='any'):
         return ret
     if __opts__['test']:
         ret['result'] = None
-        ret['comment'] = 'Module {0} is set to be togggled to {1}'.format(
+        ret['comment'] = 'Module {0} is set to be toggled to {1}'.format(
             name, module_state)
         return ret
 

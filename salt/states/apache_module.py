@@ -9,15 +9,20 @@ Enable and disable apache modules.
 .. code-block:: yaml
 
     Enable cgi module:
-        apache_module.enable:
-            - name: cgi
+      apache_module.enabled:
+        - name: cgi
 
     Disable cgi module:
-        apache_module.disable:
-            - name: cgi
+      apache_module.disabled:
+        - name: cgi
 '''
+
+# Import Python libs
 from __future__ import absolute_import
 from salt.ext.six import string_types
+
+# Import salt libs
+import salt.utils
 
 
 def __virtual__():
@@ -30,6 +35,8 @@ def __virtual__():
 def enabled(name):
     '''
     Ensure an Apache module is enabled.
+
+    .. versionadded:: 2016.3.0
 
     name
         Name of the Apache module
@@ -61,9 +68,30 @@ def enabled(name):
     return ret
 
 
+def enable(name):
+    '''
+    Ensure an Apache module is enabled. This function is deprecated and will be
+    removed in Salt Nitrogen. Please use the ``enabled`` state function instead.
+
+    .. deprecated:: 2016.3.0
+
+    name
+        Name of the Apache module
+    '''
+    salt.utils.warn_until(
+        'Nitrogen',
+        'This functionality has been deprecated; use "apache_module.enabled" '
+        'instead.'
+    )
+
+    return enabled(name)
+
+
 def disabled(name):
     '''
     Ensure an Apache module is disabled.
+
+    .. versionadded:: 2016.3.0
 
     name
         Name of the Apache module
@@ -93,3 +121,21 @@ def disabled(name):
     else:
         ret['comment'] = '{0} already disabled.'.format(name)
     return ret
+
+
+def disable(name):
+    '''
+    Ensure an Apache module is disabled.
+
+    .. deprecated:: 2016.3.0
+
+    name
+        Name of the Apache module
+    '''
+    salt.utils.warn_until(
+        'Nitrogen',
+        'This functionality has been deprecated; use "apache_module.disabled" '
+        'instead.'
+    )
+
+    return disabled(name)

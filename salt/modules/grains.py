@@ -13,12 +13,13 @@ import logging
 import operator
 import collections
 import json
-from functools import reduce
+import fnmatch
+from functools import reduce  # pylint: disable=redefined-builtin
 
 # Import 3rd-party libs
+import yaml
 import salt.utils.compat
 from salt.utils.odict import OrderedDict
-import yaml
 import salt.ext.six as six
 from salt.ext.six.moves import range  # pylint: disable=import-error,no-name-in-module,redefined-builtin
 
@@ -97,7 +98,7 @@ def get(key, default='', delimiter=DEFAULT_TARGET_DELIM, ordered=True):
     :param ordered:
         Outputs an ordered dict if applicable (default: True)
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -203,7 +204,9 @@ def setvals(grains, destructive=False):
     '''
     Set new grains values in the grains config file
 
-    :param Destructive: If an operation results in a key being removed, delete the key, too. Defaults to False.
+    destructive
+        If an operation results in a key being removed, delete the key, too.
+        Defaults to False.
 
     CLI Example:
 
@@ -289,7 +292,15 @@ def setval(key, val, destructive=False):
     '''
     Set a grains value in the grains config file
 
-    :param Destructive: If an operation results in a key being removed, delete the key, too. Defaults to False.
+    key
+        The grain key to be set.
+
+    val
+        The value to set the grain key to.
+
+    destructive
+        If an operation results in a key being removed, delete the key, too.
+        Defaults to False.
 
     CLI Example:
 
@@ -315,11 +326,13 @@ def append(key, val, convert=False, delimiter=DEFAULT_TARGET_DELIM):
     val
         The value to append to the grain key
 
-    :param convert: If convert is True, convert non-list contents into a list.
+    convert
+        If convert is True, convert non-list contents into a list.
         If convert is False and the grain contains non-list contents, an error
         is given. Defaults to False.
 
-    :param delimiter: The key can be a nested dict key. Use this parameter to
+    delimiter
+        The key can be a nested dict key. Use this parameter to
         specify the delimiter you use, instead of the default ``:``.
         You can now append values to a list in nested dictionary grains. If the
         list doesn't exist at this level, it will be created.
@@ -333,8 +346,9 @@ def append(key, val, convert=False, delimiter=DEFAULT_TARGET_DELIM):
         salt '*' grains.append key val
     '''
     grains = get(key, [], delimiter)
-    if not isinstance(grains, list) and convert is True:
-        grains = [grains]
+    if convert:
+        if not isinstance(grains, list):
+            grains = [] if grains is None else [grains]
     if not isinstance(grains, list):
         return 'The key {0} is not a valid list'.format(key)
     if val in grains:
@@ -361,12 +375,19 @@ def remove(key, val, delimiter=DEFAULT_TARGET_DELIM):
 
     Remove a value from a list in the grains config file
 
-    :param delimiter: The key can be a nested dict key. Use this parameter to
+    key
+        The grain key to remove.
+
+    val
+        The value to remove.
+
+    delimiter
+        The key can be a nested dict key. Use this parameter to
         specify the delimiter you use, instead of the default ``:``.
         You can now append values to a list in nested dictionary grains. If the
         list doesn't exist at this level, it will be created.
 
-        .. versionadded:: 2016.3.0
+        .. versionadded:: 2015.8.2
 
     CLI Example:
 
@@ -397,7 +418,11 @@ def delval(key, destructive=False):
 
     Delete a grain from the grains config file
 
-    :param destructive: Delete the key, too. Defaults to False.
+    key
+        The grain key from which to delete the value.
+
+    destructive
+        Delete the key, too. Defaults to False.
 
     CLI Example:
 
@@ -470,16 +495,36 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default', bas
         values relevant to systems matching that grain. For example, a key
         could be the grain for an OS and the value could the name of a package
         on that particular OS.
+
+        .. versionchanged:: 2016.11.0
+
+            The dictionary key could be a globbing pattern. The function will
+            return the corresponding ``lookup_dict`` value where grain value
+            matches the pattern. For example:
+
+            .. code-block:: bash
+
+                # this will render 'got some salt' if Minion ID begins from 'salt'
+                salt '*' grains.filter_by '{salt*: got some salt, default: salt is not here}' id
+
     :param grain: The name of a grain to match with the current system's
         grains. For example, the value of the "os_family" grain for the current
         system could be used to pull values from the ``lookup_dict``
         dictionary.
+
+        .. versionchanged:: 2016.11.0
+
+            The grain value could be a list. The function will return the
+            ``lookup_dict`` value for a first found item in the list matching
+            one of the ``lookup_dict`` keys.
+
     :param merge: A dictionary to merge with the results of the grain selection
         from ``lookup_dict``. This allows Pillar to override the values in the
         ``lookup_dict``. This could be useful, for example, to override the
         values for non-standard package names such as when using a different
         Python version from the default Python version provided by the OS
         (e.g., ``python26-mysql`` instead of ``python-mysql``).
+
     :param default: default lookup_dict's key used if the grain does not exists
         or if the grain value has no match on lookup_dict.  If unspecified
         the value is "default".
@@ -500,17 +545,29 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default', bas
 
         salt '*' grains.filter_by '{Debian: Debheads rule, RedHat: I love my hat}'
         # this one will render {D: {E: I, G: H}, J: K}
-        salt '*' grains.filter_by '{A: B, C: {D: {E: F,G: H}}}' 'xxx' '{D: {E: I},J: K}' 'C'
+        salt '*' grains.filter_by '{A: B, C: {D: {E: F, G: H}}}' 'xxx' '{D: {E: I}, J: K}' 'C'
         # next one renders {A: {B: G}, D: J}
         salt '*' grains.filter_by '{default: {A: {B: C}, D: E}, F: {A: {B: G}}, H: {D: I}}' 'xxx' '{D: J}' 'F' 'default'
         # next same as above when default='H' instead of 'F' renders {A: {B: C}, D: J}
     '''
 
-    ret = lookup_dict.get(
-            salt.utils.traverse_dict_and_list(__grains__, grain, None),
-            lookup_dict.get(
-                default, None)
-            )
+    ret = None
+    # Default value would be an empty list if grain not found
+    val = salt.utils.traverse_dict_and_list(__grains__, grain, [])
+
+    # Iterate over the list of grain values to match against patterns in the lookup_dict keys
+    for each in val if isinstance(val, list) else [val]:
+        for key in sorted(lookup_dict):
+            if key not in six.string_types:
+                key = str(key)
+            if fnmatch.fnmatchcase(each, key):
+                ret = lookup_dict[key]
+                break
+        if ret is not None:
+            break
+
+    if ret is None:
+        ret = lookup_dict.get(default, None)
 
     if base and base in lookup_dict:
         base_values = lookup_dict[base]
@@ -519,7 +576,8 @@ def filter_by(lookup_dict, grain='os_family', merge=None, default='default', bas
 
         elif isinstance(base_values, collections.Mapping):
             if not isinstance(ret, collections.Mapping):
-                raise SaltException('filter_by default and look-up values must both be dictionaries.')
+                raise SaltException(
+                    'filter_by default and look-up values must both be dictionaries.')
             ret = salt.utils.dictupdate.update(copy.deepcopy(base_values), ret)
 
     if merge:
@@ -713,3 +771,7 @@ def set(key,
         ret['comment'] = _setval_ret
         ret['result'] = False
     return ret
+
+
+# Provide a jinja function call compatible get aliased as fetch
+fetch = get

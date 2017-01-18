@@ -129,8 +129,6 @@ def create(path,
     '''
     if venv_bin is None:
         venv_bin = __opts__.get('venv_bin') or __pillar__.get('venv_bin')
-    # raise CommandNotFoundError if venv_bin is missing
-    salt.utils.check_or_die(venv_bin)
 
     cmd = [venv_bin]
 
@@ -287,7 +285,7 @@ def create(path,
     # Install pip
     if pip and not os.path.exists(venv_pip):
         _ret = _install_script(
-            'https://raw.githubusercontent.com/pypa/pip/master/contrib/get-pip.py',
+            'https://bootstrap.pypa.io/get-pip.py',
             path, venv_python, user, saltenv=saltenv, use_vt=use_vt
         )
         # Let's update the return dictionary with the details from the pip
@@ -382,7 +380,7 @@ def get_resource_path(venv,
     package_or_requirement
         Name of the package in which the resource resides
 
-        .. deprecated:: Nitrogen
+        .. deprecated:: 2016.3.0
             Use ``package`` instead.
 
     resource
@@ -393,7 +391,7 @@ def get_resource_path(venv,
     resource_name
         Name of the resource of which the path is to be returned
 
-        .. deprecated:: Nitrogen
+        .. deprecated:: 2016.3.0
 
 
     .. versionadded:: 2015.5.0
@@ -473,7 +471,7 @@ def get_resource_content(venv,
     package_or_requirement
         Name of the package in which the resource resides
 
-        .. deprecated:: Nitrogen
+        .. deprecated:: 2016.3.0
             Use ``package`` instead.
 
     resource
@@ -484,7 +482,7 @@ def get_resource_content(venv,
     resource_name
         Name of the resource of which the content is to be returned
 
-        .. deprecated:: Nitrogen
+        .. deprecated:: 2016.3.0
 
 
     .. versionadded:: 2015.5.0

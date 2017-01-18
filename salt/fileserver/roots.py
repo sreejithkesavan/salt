@@ -33,14 +33,14 @@ log = logging.getLogger(__name__)
 
 def find_file(path, saltenv='base', **kwargs):
     '''
-    Search the environment for the relative path
+    Search the environment for the relative path.
     '''
     if 'env' in kwargs:
         salt.utils.warn_until(
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -51,6 +51,32 @@ def find_file(path, saltenv='base', **kwargs):
         return fnd
     if saltenv not in __opts__['file_roots']:
         return fnd
+
+    def _add_file_stat(fnd):
+        '''
+        Stat the file and, assuming no errors were found, convert the stat
+        result to a list of values and add to the return dict.
+
+        Converting the stat result to a list, the elements of the list
+        correspond to the following stat_result params:
+
+        0 => st_mode=33188
+        1 => st_ino=10227377
+        2 => st_dev=65026
+        3 => st_nlink=1
+        4 => st_uid=1000
+        5 => st_gid=1000
+        6 => st_size=1056233
+        7 => st_atime=1468284229
+        8 => st_mtime=1456338235
+        9 => st_ctime=1456338235
+        '''
+        try:
+            fnd['stat'] = list(os.stat(fnd['path']))
+        except Exception:
+            pass
+        return fnd
+
     if 'index' in kwargs:
         try:
             root = __opts__['file_roots'][saltenv][int(kwargs['index'])]
@@ -64,15 +90,14 @@ def find_file(path, saltenv='base', **kwargs):
         if os.path.isfile(full) and not salt.fileserver.is_file_ignored(__opts__, full):
             fnd['path'] = full
             fnd['rel'] = path
-            fnd['stat'] = list(os.stat(full))
+            return _add_file_stat(fnd)
         return fnd
     for root in __opts__['file_roots'][saltenv]:
         full = os.path.join(root, path)
         if os.path.isfile(full) and not salt.fileserver.is_file_ignored(__opts__, full):
             fnd['path'] = full
             fnd['rel'] = path
-            fnd['stat'] = list(os.stat(full))
-            return fnd
+            return _add_file_stat(fnd)
     return fnd
 
 
@@ -92,7 +117,7 @@ def serve_file(load, fnd):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -130,7 +155,11 @@ def update():
     mtime_map_path = os.path.join(__opts__['cachedir'], 'roots/mtime_map')
     # data to send on event
     data = {'changed': False,
+            'files': {'changed': []},
             'backend': 'roots'}
+
+    # generate the new map
+    new_mtime_map = salt.fileserver.generate_mtime_map(__opts__, __opts__['file_roots'])
 
     old_mtime_map = {}
     # if you have an old map, load that
@@ -138,18 +167,23 @@ def update():
         with salt.utils.fopen(mtime_map_path, 'r') as fp_:
             for line in fp_:
                 try:
-                    file_path, mtime = line.split(':', 1)
+                    file_path, mtime = line.replace('\n', '').split(':', 1)
                     old_mtime_map[file_path] = mtime
+                    if mtime != str(new_mtime_map.get(file_path, mtime)):
+                        data['files']['changed'].append(file_path)
                 except ValueError:
                     # Document the invalid entry in the log
                     log.warning('Skipped invalid cache mtime entry in {0}: {1}'
                                 .format(mtime_map_path, line))
 
-    # generate the new map
-    new_mtime_map = salt.fileserver.generate_mtime_map(__opts__['file_roots'])
-
     # compare the maps, set changed to the return value
     data['changed'] = salt.fileserver.diff_mtime_map(old_mtime_map, new_mtime_map)
+
+    # compute files that were removed and added
+    old_files = set(old_mtime_map.keys())
+    new_files = set(new_mtime_map.keys())
+    data['files']['removed'] = list(old_files - new_files)
+    data['files']['added'] = list(new_files - old_files)
 
     # write out the new map
     mtime_map_path_dir = os.path.dirname(mtime_map_path)
@@ -180,7 +214,7 @@ def file_hash(load, fnd):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -260,7 +294,7 @@ def _file_lists(load, form):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -293,12 +327,16 @@ def _file_lists(load, form):
             for root, dirs, files in os.walk(
                     path,
                     followlinks=__opts__['fileserver_followsymlinks']):
+                # Don't walk any directories that match file_ignore_regex or glob
+                dirs[:] = [d for d in dirs if not salt.fileserver.is_file_ignored(__opts__, d)]
+
                 dir_rel_fn = os.path.relpath(root, path)
                 if __opts__.get('file_client', 'remote') == 'local' and os.path.sep == "\\":
                     dir_rel_fn = dir_rel_fn.replace('\\', '/')
                 ret['dirs'].append(dir_rel_fn)
                 if len(dirs) == 0 and len(files) == 0:
-                    if not salt.fileserver.is_file_ignored(__opts__, dir_rel_fn):
+                    if dir_rel_fn not in ('.', '..') \
+                            and not salt.fileserver.is_file_ignored(__opts__, dir_rel_fn):
                         ret['empty_dirs'].append(dir_rel_fn)
                 for fname in files:
                     is_link = os.path.islink(os.path.join(root, fname))
@@ -358,7 +396,7 @@ def symlink_list(load):
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         load.pop('env')
 
@@ -372,6 +410,8 @@ def symlink_list(load):
             prefix = ''
         # Adopting rsync functionality here and stopping at any encounter of a symlink
         for root, dirs, files in os.walk(os.path.join(path, prefix), followlinks=False):
+            # Don't walk any directories that match file_ignore_regex or glob
+            dirs[:] = [d for d in dirs if not salt.fileserver.is_file_ignored(__opts__, d)]
             for fname in files:
                 if not os.path.islink(os.path.join(root, fname)):
                     continue

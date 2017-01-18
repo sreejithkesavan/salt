@@ -160,7 +160,7 @@ __virtualname__ = 'pgjsonb'
 
 def __virtual__():
     if not HAS_PG:
-        return False
+        return False, 'Could not import pgjsonb returner; python-psycopg2 is not installed.'
     return True
 
 
@@ -272,7 +272,7 @@ def event_return(events):
                               __opts__['id'], time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime())))
 
 
-def save_load(jid, load):
+def save_load(jid, load, minions=None):
     '''
     Save the load to the specified jid id
     '''
@@ -289,6 +289,13 @@ def save_load(jid, load):
             # Without this try:except: we get tons of duplicate entry errors
             # which result in job returns not being stored properly
             pass
+
+
+def save_minions(jid, minions, syndic_id=None):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass
 
 
 def get_load(jid):

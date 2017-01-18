@@ -80,7 +80,7 @@ salt fileserver. Here's an example:
 
     Salt supports backing up managed files via the backup option. For more
     details on this functionality please review the
-    :doc:`backup_mode documentation </ref/states/backup_mode>`.
+    :ref:`backup_mode documentation <file-state-backups>`.
 
 The ``source`` parameter can also specify a file in another Salt environment.
 In this example ``foo.conf`` in the ``dev`` environment will be used instead.
@@ -97,18 +97,28 @@ In this example ``foo.conf`` in the ``dev`` environment will be used instead.
 
 .. warning::
 
-        When using a mode that includes a leading zero you must wrap the
-        value in single quotes. If the value is not wrapped in quotes it
-        will be read by YAML as an integer and evaluated as an octal.
+    When using a mode that includes a leading zero you must wrap the
+    value in single quotes. If the value is not wrapped in quotes it
+    will be read by YAML as an integer and evaluated as an octal.
+
+The ``names`` parameter, which is part of the state compiler, can be used to
+expand the contents of a single state declaration into multiple, single state
+declarations. Each item in the ``names`` list receives its own individual state
+``name`` and is converted into its own low-data structure. This is a convenient
+way to manage several files with similar attributes.
+
+There is more documentation about this feature in the
+:ref:`Names declaration<names-declaration>` section of the
+ :ref:`Highstate docs<states-highstate>`.
 
 Special files can be managed via the ``mknod`` function. This function will
 create and enforce the permissions on a special file. The function supports the
-creation of character devices, block devices, and fifo pipes. The function will
+creation of character devices, block devices, and FIFO pipes. The function will
 create the directory structure up to the special file if it is needed on the
 minion. The function will not overwrite or operate on (change major/minor
 numbers) existing special files with the exception of user, group, and
 permissions. In most cases the creation of some special files require root
-permisisons on the minion. This would require that the minion to be run as the
+permissions on the minion. This would require that the minion to be run as the
 root user. Here is an example of a character device:
 
 .. code-block:: yaml
@@ -232,6 +242,23 @@ A more complex ``recurse`` example:
         - template: jinja
         - source: salt://project/templates_dir
         - include_empty: True
+
+Retention scheduling can be applied to manage contents of backup directories.
+For example:
+
+.. code-block:: yaml
+
+    /var/backups/example_directory:
+      file.retention_schedule:
+        - strptime_format: example_name_%Y%m%dT%H%M%S.tar.bz2
+        - retain:
+            most_recent: 5
+            first_of_hour: 4
+            first_of_day: 14
+            first_of_week: 6
+            first_of_month: 6
+            first_of_year: all
+
 '''
 
 # Import python libs
@@ -241,13 +268,16 @@ import itertools
 import logging
 import os
 import shutil
+import sys
 import traceback
-from collections import Iterable, Mapping
+from collections import Iterable, Mapping, defaultdict
+from datetime import datetime   # python3 problem in the making?
 
 # Import salt libs
 import salt.loader
 import salt.payload
 import salt.utils
+import salt.utils.dictupdate
 import salt.utils.templates
 import salt.utils.url
 from salt.utils.locales import sdecode
@@ -416,7 +446,7 @@ def _clean_dir(root, keep, exclude_pat):
             while True:
                 fn_ = os.path.dirname(fn_)
                 real_keep.add(fn_)
-                if fn_ in ['/', ''.join([os.path.splitdrive(fn_)[0], '\\'])]:
+                if fn_ in ['/', ''.join([os.path.splitdrive(fn_)[0], '\\\\'])]:
                     break
 
     def _delete_not_kept(nfn):
@@ -452,13 +482,16 @@ def _check_directory(name,
                      mode,
                      clean,
                      require,
-                     exclude_pat):
+                     exclude_pat,
+                     max_depth=None):
     '''
     Check what changes need to be made on a directory
     '''
     changes = {}
     if recurse or clean:
-        walk_l = list(os.walk(name))  # walk path only once and store the result
+        assert max_depth is None or not clean
+        # walk path only once and store the result
+        walk_l = list(_depth_limited_walk(name, max_depth))
         # root: (dirs, files) structure, compatible for python2.6
         walk_d = {}
         for i in walk_l:
@@ -553,8 +586,8 @@ def _check_dir_meta(name,
             and group != stats.get('gid')):
         changes['group'] = group
     # Normalize the dir mode
-    smode = __salt__['config.manage_mode'](stats['mode'])
-    mode = __salt__['config.manage_mode'](mode)
+    smode = salt.utils.normalize_mode(stats['mode'])
+    mode = salt.utils.normalize_mode(mode)
     if mode is not None and mode != smode:
         changes['mode'] = mode
     return changes
@@ -817,7 +850,7 @@ def symlink(
     name = os.path.expanduser(name)
 
     # Make sure that leading zeros stripped by YAML loader are added back
-    mode = __salt__['config.manage_mode'](mode)
+    mode = salt.utils.normalize_mode(mode)
 
     user = _test_owner(kwargs, user=user)
     ret = {'name': name,
@@ -900,7 +933,7 @@ def symlink(
             )
     if __salt__['file.is_link'](name):
         # The link exists, verify that it matches the target
-        if __salt__['file.readlink'](name) != target:
+        if os.path.normpath(__salt__['file.readlink'](name)) != os.path.normpath(target):
             # The target is wrong, delete the link
             os.remove(name)
         else:
@@ -1082,6 +1115,7 @@ def missing(name):
 def managed(name,
             source=None,
             source_hash='',
+            source_hash_name=None,
             user=None,
             group=None,
             mode=None,
@@ -1095,6 +1129,7 @@ def managed(name,
             show_changes=True,
             create=True,
             contents=None,
+            tmp_ext='',
             contents_pillar=None,
             contents_grains=None,
             contents_newline=True,
@@ -1113,7 +1148,10 @@ def managed(name,
 
     source
         The source file to download to the minion, this source file can be
-        hosted on either the salt master server, or on an HTTP or FTP server.
+        hosted on either the salt master server (``salt://``), the salt minion
+        local file system (``/``), or on an HTTP or FTP server (``http(s)://``,
+        ``ftp://``).
+
         Both HTTPS and HTTP are supported as well as downloading directly
         from Amazon S3 compatible URLs with both pre-configured and automatic
         IAM credentials. (see s3.get state documentation)
@@ -1183,7 +1221,7 @@ def managed(name,
                     - source: https://launchpad.net/tomdroid/beta/0.7.3/+download/tomdroid-src-0.7.3.tar.gz
                     - source_hash: https://launchpad.net/tomdroid/beta/0.7.3/+download/tomdroid-src-0.7.3.hash
 
-            The following is an example of the supported source_hash format:
+            The following lines are all supported formats:
 
             .. code-block:: text
 
@@ -1193,7 +1231,7 @@ def managed(name,
 
             Debian file type ``*.dsc`` files are also supported.
 
-        **Inserting the Source Hash in the sls Data**
+        **Inserting the Source Hash in the SLS Data**
             Examples:
 
             .. code-block:: yaml
@@ -1219,6 +1257,44 @@ def managed(name,
                     - source: https://launchpad.net/tomdroid/beta/0.7.3/+download/tomdroid-src-0.7.3.tar.gz
                     - source_hash: https://launchpad.net/tomdroid/beta/0.7.3/+download/tomdroid-src-0.7.3.tar.gz/+md5
 
+    source_hash_name
+        When ``source_hash`` refers to a hash file, Salt will try to find the
+        correct hash by matching the filename/URI associated with that hash. By
+        default, Salt will look for the filename being managed. When managing a
+        file at path ``/tmp/foo.txt``, then the following line in a hash file
+        would match:
+
+        .. code-block:: text
+
+            acbd18db4cc2f85cedef654fccc4a4d8    foo.txt
+
+        However, sometimes a hash file will include multiple similar paths:
+
+        .. code-block:: text
+
+            37b51d194a7513e45b56f6524f2d51f2    ./dir1/foo.txt
+            acbd18db4cc2f85cedef654fccc4a4d8    ./dir2/foo.txt
+            73feffa4b7f6bb68e44cf984c85f6e88    ./dir3/foo.txt
+
+        In cases like this, Salt may match the incorrect hash. This argument
+        can be used to tell Salt which filename to match, to ensure that the
+        correct hash is identified. For example:
+
+        .. code-block:: yaml
+
+            /tmp/foo.txt:
+              file.managed:
+                - source: https://mydomain.tld/dir2/foo.txt
+                - source_hash: https://mydomain.tld/hashes
+                - source_hash_name: ./dir2/foo.txt
+
+        .. note::
+            This argument must contain the full filename entry from the
+            checksum file, as this argument is meant to disambiguate matches
+            for multiple files that have the same basename. So, in the
+            example above, simply using ``foo.txt`` would not match.
+
+        .. versionadded:: 2016.3.5
 
     user
         The user to own the file, this defaults to the user salt is running as
@@ -1229,13 +1305,29 @@ def managed(name,
         is running as on the minion On Windows, this is ignored
 
     mode
-        The permissions to set on this file, aka 644, 0775, 4664. Not supported
-        on Windows
+        The mode to set on this file, e.g. ``644``, ``0775``, or ``4664``.
+
+        .. note::
+            This option is **not** supported on Windows.
+
+        .. versionchanged:: 2016.11.0
+            This option can be set to ``keep``, and Salt will keep the mode
+            from the Salt fileserver. This is only supported when the
+            ``source`` URL begins with ``salt://``, or for files local to the
+            minion. Because the ``source`` option cannot be used with any of
+            the ``contents`` options, setting the ``mode`` to ``keep`` is also
+            incompatible with the ``contents`` options.
 
     template
-        If this setting is applied then the named templating engine will be
-        used to render the downloaded file, currently jinja, mako, and wempy
-        are supported
+        If this setting is applied, the named templating engine will be used to
+        render the downloaded file. The following templates are supported:
+
+        - :mod:`cheetah<salt.renderers.cheetah>`
+        - :mod:`genshi<salt.renderers.genshi>`
+        - :mod:`jinja<salt.renderers.jinja>`
+        - :mod:`mako<salt.renderers.mako>`
+        - :mod:`py<salt.renderers.py>`
+        - :mod:`wempy<salt.renderers.wempy>`
 
     makedirs : False
         If set to ``True``, then the parent directories will be created to
@@ -1245,7 +1337,8 @@ def managed(name,
     dir_mode
         If directories are to be created, passing this option specifies the
         permissions for those directories. If this is not set, directories
-        will be assigned permissions from the 'mode' argument.
+        will be assigned permissions by adding the execute bit to the mode of
+        the files.
 
     replace : True
         If set to ``False`` and the file already exists, the file will not be
@@ -1259,7 +1352,8 @@ def managed(name,
         Default context passed to the template.
 
     backup
-        Overrides the default backup mode for this specific file.
+        Overrides the default backup mode for this specific file. See
+        :ref:`backup_mode documentation <file-state-backups>` for more details.
 
     show_changes
         Output a unified diff of the old file and the new file. If ``False``
@@ -1289,12 +1383,16 @@ def managed(name,
             /path/to/file2:
               file.managed:
                 - contents: |
-                  This is line 1
-                  This is line 2
+                    This is line 1
+                    This is line 2
 
 
     contents_pillar
         .. versionadded:: 0.17.0
+        .. versionchanged: 2016.11.0
+            contents_pillar can also be a list, and the pillars will be
+            concatinated together to form one file.
+
 
         Operates like ``contents``, but draws from a value stored in pillar,
         using the pillar path syntax used in :mod:`pillar.get
@@ -1323,12 +1421,12 @@ def managed(name,
             userdata:
               deployer:
                 id_rsa: |
-                  -----BEGIN RSA PRIVATE KEY-----
-                  MIIEowIBAAKCAQEAoQiwO3JhBquPAalQF9qP1lLZNXVjYMIswrMe2HcWUVBgh+vY
-                  U7sCwx/dH6+VvNwmCoqmNnP+8gTPKGl1vgAObJAnMT623dMXjVKwnEagZPRJIxDy
-                  B/HaAre9euNiY3LvIzBTWRSeMfT+rWvIKVBpvwlgGrfgz70m0pqxu+UyFbAGLin+
-                  GpxzZAMaFpZw4sSbIlRuissXZj/sHpQb8p9M5IeO4Z3rjkCP1cxI
-                  -----END RSA PRIVATE KEY-----
+                    -----BEGIN RSA PRIVATE KEY-----
+                    MIIEowIBAAKCAQEAoQiwO3JhBquPAalQF9qP1lLZNXVjYMIswrMe2HcWUVBgh+vY
+                    U7sCwx/dH6+VvNwmCoqmNnP+8gTPKGl1vgAObJAnMT623dMXjVKwnEagZPRJIxDy
+                    B/HaAre9euNiY3LvIzBTWRSeMfT+rWvIKVBpvwlgGrfgz70m0pqxu+UyFbAGLin+
+                    GpxzZAMaFpZw4sSbIlRuissXZj/sHpQb8p9M5IeO4Z3rjkCP1cxI
+                    -----END RSA PRIVATE KEY-----
 
         .. note::
 
@@ -1345,7 +1443,28 @@ def managed(name,
     contents_grains
         .. versionadded:: 2014.7.0
 
-        Same as ``contents_pillar``, but with grains
+        Operates like ``contents``, but draws from a value stored in grains,
+        using the grains path syntax used in :mod:`grains.get
+        <salt.modules.grains.get>`. This functionality works similarly to
+        ``contents_pillar``, but with grains.
+
+        For example, the following could be used to deploy a "message of the day"
+        file:
+
+        .. code-block:: yaml
+
+            write_motd:
+              file.managed:
+                - name: /etc/motd
+                - contents_grains: motd
+
+        This would populate ``/etc/motd`` file with the contents of the ``motd``
+        grain. The ``motd`` grain is not a default grain, and would need to be
+        set prior to running the state:
+
+        .. code-block:: bash
+
+            salt '*' grains.set motd 'Welcome! This system is managed by Salt.'
 
     contents_newline : True
         .. versionadded:: 2014.7.0
@@ -1404,6 +1523,27 @@ def managed(name,
         **NOTE**: This ``check_cmd`` functions differently than the requisite
         ``check_cmd``.
 
+    tmp_ext
+        Suffix for temp file created by ``check_cmd``. Useful for checkers
+        dependant on config file extension (e.g. the init-checkconf upstart
+        config checker).
+
+        .. code-block:: yaml
+
+            /etc/init/test.conf:
+              file.managed:
+                - user: root
+                - group: root
+                - mode: 0440
+                - tmp_ext: '.conf'
+                - contents:
+                  - 'description "Salt Minion"''
+                  - 'start on started mountall'
+                  - 'stop on shutdown'
+                  - 'respawn'
+                  - 'exec salt-minion'
+                - check_cmd: init-checkconf -f
+
     skip_verify : False
         If ``True``, hash verification of remote file sources (``http://``,
         ``https://``, ``ftp://``) will be skipped, and the ``source_hash``
@@ -1416,7 +1556,7 @@ def managed(name,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -1428,15 +1568,35 @@ def managed(name,
            'name': name,
            'result': True}
 
-    content_sources = (contents, contents_pillar, contents_grains)
+    if mode is not None and salt.utils.is_windows():
+        return _error(ret, 'The \'mode\' option is not supported on Windows')
+
+    try:
+        keep_mode = mode.lower() == 'keep'
+        if keep_mode:
+            # We're not hard-coding the mode, so set it to None
+            mode = None
+    except AttributeError:
+        keep_mode = False
+
+    # Make sure that any leading zeros stripped by YAML loader are added back
+    mode = salt.utils.normalize_mode(mode)
+
     contents_count = len(
-        [x for x in content_sources if x is not None]
+        [x for x in (contents, contents_pillar, contents_grains)
+         if x is not None]
     )
 
     if source and contents_count > 0:
         return _error(
             ret,
             '\'source\' cannot be used in combination with \'contents\', '
+            '\'contents_pillar\', or \'contents_grains\''
+        )
+    elif keep_mode and contents_count > 0:
+        return _error(
+            ret,
+            'Mode preservation cannot be used in combination with \'contents\', '
             '\'contents_pillar\', or \'contents_grains\''
         )
     elif contents_count > 1:
@@ -1451,29 +1611,57 @@ def managed(name,
     if not source and contents_count == 0 and replace:
         replace = False
         log.warning(
-            'Neither \'source\' nor \'contents\' nor \'contents_pillar\' nor '
-            '\'contents_grains\' was defined, yet \'replace\' was set to '
-            '\'True\'. As there is no source to replace the file with, '
-            '\'replace\' has been set to \'False\' to avoid reading the file '
-            'unnecessarily.'
+            'State for file: {0} - Neither \'source\' nor \'contents\' nor '
+            '\'contents_pillar\' nor \'contents_grains\' was defined, yet '
+            '\'replace\' was set to \'True\'. As there is no source to '
+            'replace the file with, \'replace\' has been set to \'False\' to '
+            'avoid reading the file unnecessarily.'.format(name)
         )
 
     # Use this below to avoid multiple '\0' checks and save some CPU cycles
     if contents_pillar is not None:
-        use_contents = __salt__['pillar.get'](contents_pillar, __NOT_FOUND)
-        if use_contents is __NOT_FOUND:
-            return _error(
-                ret,
-                'Pillar {0} does not exist'.format(contents_pillar)
-            )
+        if isinstance(contents_pillar, list):
+            list_contents = []
+            for nextp in contents_pillar:
+                nextc = __salt__['pillar.get'](nextp, __NOT_FOUND,
+                                               delimiter=contents_delimiter)
+                if nextc is __NOT_FOUND:
+                    return _error(
+                        ret,
+                        'Pillar {0} does not exist'.format(nextp)
+                    )
+                list_contents.append(nextc)
+            use_contents = os.linesep.join(list_contents)
+        else:
+            use_contents = __salt__['pillar.get'](contents_pillar, __NOT_FOUND,
+                                                  delimiter=contents_delimiter)
+            if use_contents is __NOT_FOUND:
+                return _error(
+                    ret,
+                    'Pillar {0} does not exist'.format(contents_pillar)
+                )
 
     elif contents_grains is not None:
-        use_contents = __salt__['grains.get'](contents_grains, __NOT_FOUND)
-        if use_contents is __NOT_FOUND:
-            return _error(
-                ret,
-                'Grain {0} does not exist'.format(contents_grains)
-            )
+        if isinstance(contents_grains, list):
+            list_contents = []
+            for nextg in contents_grains:
+                nextc = __salt__['grains.get'](nextg, __NOT_FOUND,
+                                               delimiter=contents_delimiter)
+                if nextc is __NOT_FOUND:
+                    return _error(
+                        ret,
+                        'Grain {0} does not exist'.format(nextc)
+                    )
+                list_contents.append(nextc)
+            use_contents = os.linesep.join(list_contents)
+        else:
+            use_contents = __salt__['grains.get'](contents_grains, __NOT_FOUND,
+                                                  delimiter=contents_delimiter)
+            if use_contents is __NOT_FOUND:
+                return _error(
+                    ret,
+                    'Grain {0} does not exist'.format(contents_grains)
+                )
 
     elif contents is not None:
         use_contents = contents
@@ -1512,9 +1700,23 @@ def managed(name,
             contents = os.linesep.join(validated_contents)
             if contents_newline and not contents.endswith(os.linesep):
                 contents += os.linesep
-
-    # Make sure that leading zeros stripped by YAML loader are added back
-    mode = __salt__['config.manage_mode'](mode)
+        if template:
+            contents = __salt__['file.apply_template_on_contents'](
+                contents,
+                template=template,
+                context=context,
+                defaults=defaults,
+                saltenv=__env__)
+            if not isinstance(contents, six.string_types):
+                if 'result' in contents:
+                    ret['result'] = contents['result']
+                else:
+                    ret['result'] = False
+                if 'comment' in contents:
+                    ret['comment'] = contents['comment']
+                else:
+                    ret['comment'] = 'Error while applying template on contents'
+                return ret
 
     if not name:
         return _error(ret, 'Must provide name to file.exists')
@@ -1570,28 +1772,29 @@ def managed(name,
         if not context:
             context = {}
         context['accumulator'] = accum_data[name]
-    if 'file.check_managed_changes' in __salt__:
-        ret['pchanges'] = __salt__['file.check_managed_changes'](
-            name,
-            source,
-            source_hash,
-            user,
-            group,
-            mode,
-            template,
-            context,
-            defaults,
-            __env__,
-            contents,
-            skip_verify,
-            **kwargs
-        )
-    else:
-        ret['pchanges'] = {}
 
     try:
         if __opts__['test']:
-            if ret['pchanges']:
+            if 'file.check_managed_changes' in __salt__:
+                ret['pchanges'] = __salt__['file.check_managed_changes'](
+                    name,
+                    source,
+                    source_hash,
+                    source_hash_name,
+                    user,
+                    group,
+                    mode,
+                    template,
+                    context,
+                    defaults,
+                    __env__,
+                    contents,
+                    skip_verify,
+                    **kwargs
+                )
+            if isinstance(ret['pchanges'], tuple):
+                ret['result'], ret['comment'] = ret['pchanges']
+            elif ret['pchanges']:
                 ret['result'] = None
                 ret['comment'] = 'The file {0} is set to be changed'.format(name)
                 if show_changes and 'diff' in ret['pchanges']:
@@ -1622,6 +1825,7 @@ def managed(name,
             template,
             source,
             source_hash,
+            source_hash_name,
             user,
             group,
             mode,
@@ -1639,7 +1843,7 @@ def managed(name,
     tmp_filename = None
 
     if check_cmd:
-        tmp_filename = salt.utils.mkstemp()
+        tmp_filename = salt.utils.mkstemp(suffix=tmp_ext)
 
         # if exists copy existing file to tmp to compare
         if __salt__['file.file_exists'](name):
@@ -1671,7 +1875,9 @@ def managed(name,
                 contents,
                 dir_mode,
                 follow_symlinks,
-                skip_verify)
+                skip_verify,
+                keep_mode,
+                **kwargs)
         except Exception as exc:
             ret['changes'] = {}
             log.debug(traceback.format_exc())
@@ -1728,7 +1934,9 @@ def managed(name,
                 contents,
                 dir_mode,
                 follow_symlinks,
-                skip_verify)
+                skip_verify,
+                keep_mode,
+                **kwargs)
         except Exception as exc:
             ret['changes'] = {}
             log.debug(traceback.format_exc())
@@ -1764,10 +1972,24 @@ def _get_recurse_set(recurse):
     return recurse_set
 
 
+def _depth_limited_walk(top, max_depth=None):
+    '''
+    Walk the directory tree under root up till reaching max_depth.
+    With max_depth=None (default), do not limit depth.
+    '''
+    for root, dirs, files in os.walk(top):
+        if max_depth is not None:
+            rel_depth = root.count(os.sep) - top.count(os.sep)
+            if rel_depth >= max_depth:
+                del dirs[:]
+        yield (str(root), list(dirs), list(files))
+
+
 def directory(name,
               user=None,
               group=None,
               recurse=None,
+              max_depth=None,
               dir_mode=None,
               file_mode=None,
               makedirs=False,
@@ -1778,6 +2000,7 @@ def directory(name,
               force=False,
               backupname=None,
               allow_symlink=True,
+              children_only=False,
               **kwargs):
     '''
     Ensure that a named directory is present and has the right perms
@@ -1804,33 +2027,39 @@ def directory(name,
         .. code-block:: yaml
 
             /var/log/httpd:
-                file.directory:
+              file.directory:
                 - user: root
                 - group: root
                 - dir_mode: 755
                 - file_mode: 644
                 - recurse:
-                    - user
-                    - group
-                    - mode
+                  - user
+                  - group
+                  - mode
 
         Leave files or directories unchanged:
 
         .. code-block:: yaml
 
             /var/log/httpd:
-                file.directory:
+              file.directory:
                 - user: root
                 - group: root
                 - dir_mode: 755
                 - file_mode: 644
                 - recurse:
-                    - user
-                    - group
-                    - mode
-                    - ignore_dirs
+                  - user
+                  - group
+                  - mode
+                  - ignore_dirs
 
         .. versionadded:: 2015.5.0
+
+    max_depth
+        Limit the recursion depth. The default is no limit=None.
+        'max_depth' and 'clean' are mutually exclusive.
+
+        .. versionadded:: 2016.11.0
 
     dir_mode / mode
         The permissions mode to set any directories created. Not supported on
@@ -1850,6 +2079,7 @@ def directory(name,
         Make sure that only files that are set up by salt and required by this
         function are kept. If this option is set then everything in this
         directory will be deleted unless it is required.
+        'clean' and 'max_depth' are mutually exclusive.
 
     require
         Require other resources such as packages or files
@@ -1890,6 +2120,11 @@ def directory(name,
         argument.
 
         .. versionadded:: 2014.7.0
+
+    children_only : False
+        If children_only is True the base of a path is excluded when performing
+        a recursive operation. In case of /path/to/base, base will be ignored
+        while all of /path/to/base/* are still operated on.
     '''
     name = os.path.expanduser(name)
     ret = {'name': name,
@@ -1902,6 +2137,9 @@ def directory(name,
     # Remove trailing slash, if present and we're not working on "/" itself
     if name[-1] == '/' and name != '/':
         name = name[:-1]
+
+    if max_depth is not None and clean:
+        return _error(ret, 'Cannot specify both max_depth and clean')
 
     user = _test_owner(kwargs, user=user)
     if salt.utils.is_windows():
@@ -1919,8 +2157,8 @@ def directory(name,
         file_mode = dir_mode
 
     # Make sure that leading zeros stripped by YAML loader are added back
-    dir_mode = __salt__['config.manage_mode'](dir_mode)
-    file_mode = __salt__['config.manage_mode'](file_mode)
+    dir_mode = salt.utils.normalize_mode(dir_mode)
+    file_mode = salt.utils.normalize_mode(file_mode)
 
     u_check = _check_user(user, group)
     if u_check:
@@ -1967,7 +2205,8 @@ def directory(name,
         dir_mode,
         clean,
         require,
-        exclude_pat)
+        exclude_pat,
+        max_depth)
 
     if __opts__['test']:
         ret['result'] = presult
@@ -2002,16 +2241,20 @@ def directory(name,
     if not os.path.isdir(name):
         return _error(ret, 'Failed to create directory {0}'.format(name))
 
+    # issue 32707: skip this __salt__['file.check_perms'] call if children_only == True
     # Check permissions
-    ret, perms = __salt__['file.check_perms'](name,
-                                              ret,
-                                              user,
-                                              group,
-                                              dir_mode,
-                                              follow_symlinks)
+    if not children_only:
+        ret, perms = __salt__['file.check_perms'](name,
+                                                  ret,
+                                                  user,
+                                                  group,
+                                                  dir_mode,
+                                                  follow_symlinks)
 
+    errors = []
     if recurse or clean:
-        walk_l = list(os.walk(name))  # walk path only once and store the result
+        # walk path only once and store the result
+        walk_l = list(_depth_limited_walk(name, max_depth))
         # root: (dirs, files) structure, compatible for python2.6
         walk_d = {}
         for i in walk_l:
@@ -2071,23 +2314,31 @@ def directory(name,
             if check_files:
                 for fn_ in files:
                     full = os.path.join(root, fn_)
-                    ret, perms = __salt__['file.check_perms'](
-                        full,
-                        ret,
-                        user,
-                        group,
-                        file_mode,
-                        follow_symlinks)
+                    try:
+                        ret, _ = __salt__['file.check_perms'](
+                            full,
+                            ret,
+                            user,
+                            group,
+                            file_mode,
+                            follow_symlinks)
+                    except CommandExecutionError as exc:
+                        if not exc.strerror.endswith('does not exist'):
+                            errors.append(exc.strerror)
             if check_dirs:
                 for dir_ in dirs:
                     full = os.path.join(root, dir_)
-                    ret, perms = __salt__['file.check_perms'](
-                        full,
-                        ret,
-                        user,
-                        group,
-                        dir_mode,
-                        follow_symlinks)
+                    try:
+                        ret, _ = __salt__['file.check_perms'](
+                            full,
+                            ret,
+                            user,
+                            group,
+                            dir_mode,
+                            follow_symlinks)
+                    except CommandExecutionError as exc:
+                        if not exc.strerror.endswith('does not exist'):
+                            errors.append(exc.strerror)
 
     if clean:
         keep = _gen_keep_files(name, require, walk_d)
@@ -2098,13 +2349,23 @@ def directory(name,
             ret['changes']['removed'] = removed
             ret['comment'] = 'Files cleaned from directory {0}'.format(name)
 
+    # issue 32707: reflect children_only selection in comments
     if not ret['comment']:
-        ret['comment'] = 'Directory {0} updated'.format(name)
+        if children_only:
+            ret['comment'] = 'Directory {0}/* updated'.format(name)
+        else:
+            ret['comment'] = 'Directory {0} updated'.format(name)
 
     if __opts__['test']:
         ret['comment'] = 'Directory {0} not updated'.format(name)
     elif not ret['changes'] and ret['result']:
         ret['comment'] = 'Directory {0} is in the correct state'.format(name)
+
+    if errors:
+        ret['result'] = False
+        ret['comment'] += '\n\nThe following errors were encountered:\n'
+        for error in errors:
+            ret['comment'] += '\n- {0}'.format(error)
     return ret
 
 
@@ -2158,25 +2419,46 @@ def recurse(name,
         salt is running as on the minion. On Windows, this is ignored
 
     dir_mode
-        The permissions mode to set on any directories created. Not supported on
-        Windows
+        The mode to set on any directories created.
+
+        .. note::
+            This option is **not** supported on Windows.
 
     file_mode
-        The permissions mode to set on any files created. Not supported on
+        The mode to set on any files created.
         Windows
+
+        .. note::
+            This option is **not** supported on Windows.
+
+        .. versionchanged:: 2016.11.0
+            This option can be set to ``keep``, and Salt will keep the mode
+            from the Salt fileserver. This is only supported when the
+            ``source`` URL begins with ``salt://``, or for files local to the
+            minion. Because the ``source`` option cannot be used with any of
+            the ``contents`` options, setting the ``mode`` to ``keep`` is also
+            incompatible with the ``contents`` options.
 
     sym_mode
-        The permissions mode to set on any symlink created. Not supported on
-        Windows
+        The mode to set on any symlink created.
+
+        .. note::
+            This option is **not** supported on Windows.
 
     template
-        If this setting is applied then the named templating engine will be
-        used to render the downloaded file. Supported templates are:
-        `jinja`, `mako` and `wempy`.
+        If this setting is applied, the named templating engine will be used to
+        render the downloaded file. The following templates are supported:
 
-    .. note::
+        - :mod:`cheetah<salt.renderers.cheetah>`
+        - :mod:`genshi<salt.renderers.genshi>`
+        - :mod:`jinja<salt.renderers.jinja>`
+        - :mod:`mako<salt.renderers.mako>`
+        - :mod:`py<salt.renderers.py>`
+        - :mod:`wempy<salt.renderers.wempy>`
 
-        The template option is required when recursively applying templates.
+        .. note::
+
+            The template option is required when recursively applying templates.
 
     context
         Overrides default context variables passed to the template.
@@ -2187,6 +2469,10 @@ def recurse(name,
     include_empty
         Set this to True if empty directories should also be created
         (default is False)
+
+    backup
+        Overrides the default backup mode for all replaced files. See
+        :ref:`backup_mode documentation <file-state-backups>` for more details.
 
     include_pat
         When copying, include only this pattern from the source. Default
@@ -2245,7 +2531,7 @@ def recurse(name,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -2275,9 +2561,22 @@ def recurse(name,
         )
         return ret
 
+    if any([x is not None for x in (dir_mode, file_mode, sym_mode)]) \
+            and salt.utils.is_windows():
+        return _error(ret, 'mode management is not supported on Windows')
+
     # Make sure that leading zeros stripped by YAML loader are added back
-    dir_mode = __salt__['config.manage_mode'](dir_mode)
-    file_mode = __salt__['config.manage_mode'](file_mode)
+    dir_mode = salt.utils.normalize_mode(dir_mode)
+
+    try:
+        keep_mode = file_mode.lower() == 'keep'
+        if keep_mode:
+            # We're not hard-coding the mode, so set it to None
+            file_mode = None
+    except AttributeError:
+        keep_mode = False
+
+    file_mode = salt.utils.normalize_mode(file_mode)
 
     u_check = _check_user(user, group)
     if u_check:
@@ -2295,7 +2594,7 @@ def recurse(name,
 
     for precheck in source_list:
         if not precheck.startswith('salt://'):
-            return _error(ret, ('Invalid source {0!r} '
+            return _error(ret, ('Invalid source \'{0}\' '
                                 '(must be a salt:// URI)'.format(precheck)))
 
     # Select the first source in source_list that exists
@@ -2308,15 +2607,17 @@ def recurse(name,
 
     # Check source path relative to fileserver root, make sure it is a
     # directory
-    source_rel = source.partition('://')[2]
-    master_dirs = __salt__['cp.list_master_dirs'](__env__)
-    if source_rel not in master_dirs \
+    srcpath, senv = salt.utils.url.parse(source)
+    if senv is None:
+        senv = __env__
+    master_dirs = __salt__['cp.list_master_dirs'](saltenv=senv)
+    if srcpath not in master_dirs \
             and not any((x for x in master_dirs
-                         if x.startswith(source_rel + '/'))):
+                         if x.startswith(srcpath + '/'))):
         ret['result'] = False
         ret['comment'] = (
-            'The directory {0!r} does not exist on the salt fileserver '
-            'in saltenv {1!r}'.format(source, __env__)
+            'The directory \'{0}\' does not exist on the salt fileserver '
+            'in saltenv \'{1}\''.format(srcpath, senv)
         )
         return ret
 
@@ -2327,8 +2628,7 @@ def recurse(name,
             return _error(
                 ret, 'The path {0} exists and is not a directory'.format(name))
         if not __opts__['test']:
-            __salt__['file.makedirs_perms'](
-                name, user, group, int(str(dir_mode), 8) if dir_mode else None)
+            __salt__['file.makedirs_perms'](name, user, group, dir_mode)
 
     def add_comment(path, comment):
         comments = ret['comment'].setdefault(path, [])
@@ -2350,7 +2650,6 @@ def recurse(name,
             ret['changes'][path] = _ret['changes']
 
     def manage_file(path, source):
-        source = salt.utils.url.escape(source)
         if clean and os.path.exists(path) and os.path.isdir(path):
             _ret = {'name': name, 'changes': {}, 'result': True, 'comment': ''}
             if __opts__['test']:
@@ -2377,7 +2676,7 @@ def recurse(name,
             source=source,
             user=user,
             group=group,
-            mode=file_mode,
+            mode='keep' if keep_mode else file_mode,
             template=template,
             makedirs=True,
             context=context,
@@ -2397,7 +2696,7 @@ def recurse(name,
                 merge_ret(path, _ret)
                 return
             else:
-                os.remove(path)
+                __salt__['file.remove'](path)
                 _ret['changes'] = {'diff': 'Replaced file with a directory'}
                 merge_ret(path, _ret)
 
@@ -2457,16 +2756,15 @@ def recurse(name,
 
     keep = set()
     vdir = set()
-    srcpath = salt.utils.url.parse(source)[0]
     if not srcpath.endswith('/'):
         # we're searching for things that start with this *directory*.
         # use '/' since #master only runs on POSIX
         srcpath = srcpath + '/'
-    fns_ = __salt__['cp.list_master'](__env__, srcpath)
+    fns_ = __salt__['cp.list_master'](senv, srcpath)
     # If we are instructed to keep symlinks, then process them.
     if keep_symlinks:
         # Make this global so that emptydirs can use it if needed.
-        symlinks = __salt__['cp.list_master_symlinks'](__env__, srcpath)
+        symlinks = __salt__['cp.list_master_symlinks'](senv, srcpath)
         fns_ = process_symlinks(fns_, symlinks)
     for fn_ in fns_:
         if not fn_.strip():
@@ -2505,11 +2803,11 @@ def recurse(name,
             manage_directory(dirname)
             vdir.add(dirname)
 
-        src = salt.utils.url.create(fn_)
+        src = salt.utils.url.create(fn_, saltenv=senv)
         manage_file(dest, src)
 
     if include_empty:
-        mdirs = __salt__['cp.list_master_dirs'](__env__, srcpath)
+        mdirs = __salt__['cp.list_master_dirs'](senv, srcpath)
         for mdir in mdirs:
             if not salt.utils.check_include_exclude(
                     os.path.relpath(mdir, srcpath), include_pat, exclude_pat):
@@ -2560,6 +2858,195 @@ def recurse(name,
     return ret
 
 
+def retention_schedule(name, retain, strptime_format=None, timezone=None):
+    '''
+    Apply retention scheduling to backup storage directory.
+
+    .. versionadded:: 2016.11.0
+
+    :param name:
+        The filesystem path to the directory containing backups to be managed.
+
+    :param retain:
+        Delete the backups, except for the ones we want to keep.
+        The N below should be an integer but may also be the special value of ``all``,
+        which keeps all files matching the criteria.
+        All of the retain options default to None,
+        which means to not keep files based on this criteria.
+
+        :most_recent N:
+            Keep the most recent N files.
+
+        :first_of_hour N:
+            For the last N hours from now, keep the first file after the hour.
+
+        :first_of_day N:
+            For the last N days from now, keep the first file after midnight.
+            See also ``timezone``.
+
+        :first_of_week N:
+            For the last N weeks from now, keep the first file after Sunday midnight.
+
+        :first_of_month N:
+            For the last N months from now, keep the first file after the start of the month.
+
+        :first_of_year N:
+            For the last N years from now, keep the first file after the start of the year.
+
+    :param strptime_format:
+        A python strptime format string used to first match the filenames of backups
+        and then parse the filename to determine the datetime of the file.
+        https://docs.python.org/2/library/datetime.html#datetime.datetime.strptime
+        Defaults to None, which considers all files in the directory to be backups eligible for deletion
+        and uses ``os.path.getmtime()`` to determine the datetime.
+
+    :param timezone:
+        The timezone to use when determining midnight.
+        This is only used when datetime is pulled from ``os.path.getmtime()``.
+        Defaults to ``None`` which uses the timezone from the locale.
+
+    .. code-block: yaml
+
+        /var/backups/example_directory:
+          file.retention_schedule:
+            - retain:
+                most_recent: 5
+                first_of_hour: 4
+                first_of_day: 7
+                first_of_week: 6    # NotImplemented yet.
+                first_of_month: 6
+                first_of_year: all
+            - strptime_format: example_name_%Y%m%dT%H%M%S.tar.bz2
+            - timezone: None
+
+    '''
+    name = os.path.expanduser(name)
+    ret = {'name': name,
+           'changes': {'retained': [], 'deleted': [], 'ignored': []},
+           'pchanges': {'retained': [], 'deleted': [], 'ignored': []},
+           'result': True,
+           'comment': ''}
+    if not name:
+        return _error(ret, 'Must provide name to file.retention_schedule')
+    if not os.path.isdir(name):
+        return _error(ret, 'Name provided to file.retention must be a directory')
+
+    # get list of files in directory
+    all_files = __salt__['file.readdir'](name)
+
+    # if strptime_format is set, filter through the list to find names which parse and get their datetimes.
+    beginning_of_unix_time = datetime(1970, 1, 1)
+
+    def get_file_time_from_strptime(f):
+        try:
+            ts = datetime.strptime(f, strptime_format)
+            ts_epoch = salt.utils.total_seconds(ts - beginning_of_unix_time)
+            return (ts, ts_epoch)
+        except ValueError:
+            # Files which don't match the pattern are not relevant files.
+            return (None, None)
+
+    def get_file_time_from_mtime(f):
+        lstat = __salt__['file.lstat'](os.path.join(name, f))
+        if lstat:
+            mtime = lstat['st_mtime']
+            return (datetime.fromtimestamp(mtime, timezone), mtime)
+        else:   # maybe it was deleted since we did the readdir?
+            return (None, None)
+
+    get_file_time = get_file_time_from_strptime if strptime_format else get_file_time_from_mtime
+
+    # data structures are nested dicts:
+    # files_by_ymd = year.month.day.hour.unixtime: filename
+    # files_by_y_week_dow = year.week_of_year.day_of_week.unixtime: filename
+    # http://the.randomengineer.com/2015/04/28/python-recursive-defaultdict/
+    # TODO: move to an ordered dict model and reduce the number of sorts in the rest of the code?
+    def dict_maker():
+        return defaultdict(dict_maker)
+    files_by_ymd = dict_maker()
+    files_by_y_week_dow = dict_maker()
+    relevant_files = set()
+    ignored_files = set()
+    for f in all_files:
+        ts, ts_epoch = get_file_time(f)
+        if ts:
+            files_by_ymd[ts.year][ts.month][ts.day][ts.hour][ts_epoch] = f
+            week_of_year = ts.isocalendar()[1]
+            files_by_y_week_dow[ts.year][week_of_year][ts.weekday()][ts_epoch] = f
+            relevant_files.add(f)
+        else:
+            ignored_files.add(f)
+
+    # This is tightly coupled with the file_with_times data-structure above.
+    RETAIN_TO_DEPTH = {
+        'first_of_year': 1,
+        'first_of_month': 2,
+        'first_of_day': 3,
+        'first_of_hour': 4,
+        'most_recent': 5,
+    }
+
+    def get_first(fwt):
+        if isinstance(fwt, dict):
+            first_sub_key = sorted(fwt.keys())[0]
+            return get_first(fwt[first_sub_key])
+        else:
+            return set([fwt, ])
+
+    def get_first_n_at_depth(fwt, depth, n):
+        if depth <= 0:
+            return get_first(fwt)
+        else:
+            result_set = set()
+            for k in sorted(fwt.keys(), reverse=True):
+                needed = n - len(result_set)
+                if needed < 1:
+                    break
+                result_set |= get_first_n_at_depth(fwt[k], depth - 1, needed)
+            return result_set
+
+    # for each retain criteria, add filenames which match the criteria to the retain set.
+    retained_files = set()
+    for retention_rule, keep_count in retain.items():
+        # This is kind of a hack, since 'all' should really mean all,
+        # but I think it's a large enough number that even modern filesystems would
+        # choke if they had this many files in a single directory.
+        keep_count = sys.maxsize if 'all' == keep_count else int(keep_count)
+        if 'first_of_week' == retention_rule:
+            first_of_week_depth = 2   # year + week_of_year = 2
+            # I'm adding 1 to keep_count below because it fixed an off-by one
+            # issue in the tests. I don't understand why, and that bothers me.
+            retained_files |= get_first_n_at_depth(files_by_y_week_dow,
+                                                   first_of_week_depth,
+                                                   keep_count + 1)
+        else:
+            retained_files |= get_first_n_at_depth(files_by_ymd,
+                                                   RETAIN_TO_DEPTH[retention_rule],
+                                                   keep_count)
+
+    deletable_files = list(relevant_files - retained_files)
+    deletable_files.sort(reverse=True)
+    changes = {
+            'retained': sorted(list(retained_files), reverse=True),
+            'deleted': deletable_files,
+            'ignored': sorted(list(ignored_files), reverse=True),
+        }
+    ret['pchanges'] = changes
+
+    # TODO: track and report how much space was / would be reclaimed
+    if __opts__['test']:
+        ret['comment'] = '{0} backups would have been removed from {1}.\n'.format(len(deletable_files), name)
+        if deletable_files:
+            ret['result'] = None
+    else:
+        for f in deletable_files:
+            __salt__['file.remove'](os.path.join(name, f))
+        ret['comment'] = '{0} backups were removed from {1}.\n'.format(len(deletable_files), name)
+        ret['changes'] = changes
+
+    return ret
+
+
 def line(name, content, match=None, mode=None, location=None,
          before=None, after=None, show_changes=True, backup=False,
          quiet=False, indent=True, create=False, user=None,
@@ -2569,43 +3056,61 @@ def line(name, content, match=None, mode=None, location=None,
 
     .. versionadded:: 2015.8.0
 
-    :param name:
+    name
         Filesystem path to the file to be edited.
 
-    :param content:
+    content
         Content of the line.
 
-    :param match:
+    match
         Match the target line for an action by
         a fragment of a string or regular expression.
 
-    :param mode:
-        :Ensure:
+        If neither ``before`` nor ``after`` are provided, and ``match``
+        is also ``None``, match becomes the ``content`` value.
+
+    mode
+        Defines how to edit a line. One of the following options is
+        required:
+
+        - ensure
             If line does not exist, it will be added.
-
-        :Replace:
-            If line already exist, it will be replaced.
-
-        :Delete:
+        - replace
+            If line already exists, it will be replaced.
+        - delete
             Delete the line, once found.
-
-        :Insert:
+        - insert
             Insert a line.
 
-    :param location:
-        :start:
-            Place the content at the beginning of the file.
+        .. note::
 
-        :end:
+            If ``mode=insert`` is used, at least one of the following
+            options must also be defined: ``location``, ``before``, or
+            ``after``. If ``location`` is used, it takes precedence
+            over the other two options.
+
+    location
+        Defines where to place content in the line. Note this option is only
+        used when ``mode=insert`` is specified. If a location is passed in, it
+        takes precedence over both the ``before`` and ``after`` kwargs. Valid
+        locations are:
+
+        - start
+            Place the content at the beginning of the file.
+        - end
             Place the content at the end of the file.
 
-    :param before:
+    before
         Regular expression or an exact case-sensitive fragment of the string.
+        This option is only used when either the ``ensure`` or ``insert`` mode
+        is defined.
 
-    :param after:
+    after
         Regular expression or an exact case-sensitive fragment of the string.
+        This option is only used when either the ``ensure`` or ``insert`` mode
+        is defined.
 
-    :param show_changes:
+    show_changes
         Output a unified diff of the old file and the new file.
         If ``False`` return a boolean if any changes were made.
         Default is ``True``
@@ -2614,39 +3119,40 @@ def line(name, content, match=None, mode=None, location=None,
             Using this option will store two copies of the file in-memory
             (the original version and the edited version) in order to generate the diff.
 
-    :param backup:
+    backup
         Create a backup of the original file with the extension:
         "Year-Month-Day-Hour-Minutes-Seconds".
 
-    :param quiet:
+    quiet
         Do not raise any exceptions. E.g. ignore the fact that the file that is
         tried to be edited does not exist and nothing really happened.
 
-    :param indent:
-        Keep indentation with the previous line.
+    indent
+        Keep indentation with the previous line. This option is not considered when
+        the ``delete`` mode is specified.
 
     :param create:
         Create an empty file if doesn't exists.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     :param user:
         The user to own the file, this defaults to the user salt is running as
         on the minion.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     :param group:
         The group ownership set for the file, this defaults to the group salt
         is running as on the minion On Windows, this is ignored.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     :param file_mode:
         The permissions to set on this file, aka 644, 0775, 4664. Not supported
         on Windows.
 
-        .. versionadded:: Carbon
+        .. versionadded:: 2016.11.0
 
     If an equal sign (``=``) appears in an argument to a Salt command, it is
     interpreted as a keyword argument in the format of ``key=val``. That
@@ -2709,14 +3215,16 @@ def replace(name,
             prepend_if_not_found=False,
             not_found_content=None,
             backup='.bak',
-            show_changes=True):
+            show_changes=True,
+            ignore_if_missing=False):
     r'''
     Maintain an edit in a file.
 
     .. versionadded:: 0.17.0
 
     name
-        Filesystem path to the file to be edited.
+        Filesystem path to the file to be edited. If a symlink is specified, it
+        will be resolved to its target.
 
     pattern
         A regular expression, to be matched using Python's
@@ -2736,7 +3244,20 @@ def replace(name,
         correlate to the human-friendly flag name. E.g., ``['IGNORECASE',
         'MULTILINE']``. Optionally, ``flags`` may be an int, with a value
         corresponding to the XOR (``|``) of all the desired flags. Defaults to
-        8 (which supports 'MULTILINE').
+        ``8`` (which equates to ``['MULTILINE']``).
+
+        .. note::
+
+            ``file.replace`` reads the entire file as a string to support
+            multiline regex patterns. Therefore, when using anchors such as
+            ``^`` or ``$`` in the pattern, those anchors may be relative to
+            the line OR relative to the file. The default for ``file.replace``
+            is to treat anchors as relative to the line, which is implemented
+            by setting the default value of ``flags`` to ``['MULTILINE']``.
+            When overriding the default value for ``flags``, if
+            ``'MULTILINE'`` is not present then anchors will be relative to
+            the file. If the desired behavior is for anchors to be relative to
+            the line, then simply add ``'MULTILINE'`` to the list of flags.
 
     bufsize
         How much of the file to buffer into memory at once. The default value
@@ -2777,6 +3298,13 @@ def replace(name,
             original version and the edited version) in order to generate the
             diff. This may not normally be a concern, but could impact
             performance if used with large files.
+
+    ignore_if_missing : False
+        .. versionadded:: 2016.3.4
+
+        Controls what to do if the file is missing. If set to ``False``, the
+        state will display an error raised by the execution module. If set to
+        ``True``, the state will simply report no changes.
 
     For complex regex patterns, it can be useful to avoid the need for complex
     quoting and escape sequences by making use of YAML's multiline string
@@ -2821,7 +3349,8 @@ def replace(name,
                                        not_found_content=not_found_content,
                                        backup=backup,
                                        dry_run=__opts__['test'],
-                                       show_changes=show_changes)
+                                       show_changes=show_changes,
+                                       ignore_if_missing=ignore_if_missing)
 
     if changes:
         ret['pchanges']['diff'] = changes
@@ -2980,9 +3509,15 @@ def blockreplace(
                     - source_hash: md5=79eef25f9b0b2c642c62b7f737d4f53f
 
     template
-        If this setting is applied then the named templating engine will be
-        used to render the downloaded file, currently jinja, mako, and wempy
-        are supported
+        The named templating engine will be used to render the downloaded file.
+        Defaults to ``jinja``. The following templates are supported:
+
+        - :mod:`cheetah<salt.renderers.cheetah>`
+        - :mod:`genshi<salt.renderers.genshi>`
+        - :mod:`jinja<salt.renderers.jinja>`
+        - :mod:`mako<salt.renderers.mako>`
+        - :mod:`py<salt.renderers.py>`
+        - :mod:`wempy<salt.renderers.wempy>`
 
     context
         Overrides default context variables passed to the template.
@@ -3189,9 +3724,16 @@ def comment(name, regex, char='#', backup='.bak'):
         return _error(ret, check_msg)
 
     unanchor_regex = regex.lstrip('^').rstrip('$')
+    comment_regex = char + unanchor_regex
+
+    # Check if the line is already commented
+    if __salt__['file.search'](name, comment_regex, multiline=True):
+        commented = True
+    else:
+        commented = False
 
     # Make sure the pattern appears in the file before continuing
-    if not __salt__['file.search'](name, regex, multiline=True):
+    if commented or not __salt__['file.search'](name, regex, multiline=True):
         if __salt__['file.search'](name, unanchor_regex, multiline=True):
             ret['comment'] = 'Pattern already commented'
             ret['result'] = True
@@ -3434,9 +3976,16 @@ def append(name,
                     - source: https://launchpad.net/tomdroid/beta/0.7.3/+download/tomdroid-src-0.7.3.tar.gz
                     - source_hash: https://launchpad.net/tomdroid/beta/0.7.3/+download/tomdroid-src-0.7.3.tar.gz/+md5
 
-    template : ``jinja``
-        The named templating engine will be used to render the appended-to
-        file. Defaults to jinja.
+    template
+        The named templating engine will be used to render the appended-to file.
+        Defaults to ``jinja``. The following templates are supported:
+
+        - :mod:`cheetah<salt.renderers.cheetah>`
+        - :mod:`genshi<salt.renderers.genshi>`
+        - :mod:`jinja<salt.renderers.jinja>`
+        - :mod:`mako<salt.renderers.mako>`
+        - :mod:`py<salt.renderers.py>`
+        - :mod:`wempy<salt.renderers.wempy>`
 
     sources
         A list of source files to append. If the files are hosted on an HTTP or
@@ -3489,22 +4038,22 @@ def append(name,
               - append
               - template: jinja
               - sources:
-                  - salt://motd/devops-messages.tmpl
-                  - salt://motd/hr-messages.tmpl
-                  - salt://motd/general-messages.tmpl
+                - salt://motd/devops-messages.tmpl
+                - salt://motd/hr-messages.tmpl
+                - salt://motd/general-messages.tmpl
 
     .. versionadded:: 0.9.5
     '''
-    name = os.path.expanduser(name)
-
-    ret = {
-            'name': name,
+    ret = {'name': name,
             'changes': {},
             'pchanges': {},
             'result': False,
             'comment': ''}
+
     if not name:
         return _error(ret, 'Must provide name to file.append')
+
+    name = os.path.expanduser(name)
 
     if sources is None:
         sources = []
@@ -3553,18 +4102,16 @@ def append(name,
     text = _validate_str_list(text)
 
     with salt.utils.fopen(name, 'rb') as fp_:
-        slines = fp_.readlines()
+        slines = fp_.read().splitlines()
 
-    count = 0
-    test_lines = []
-
+    append_lines = []
     try:
         for chunk in text:
             if ignore_whitespace:
                 if __salt__['file.search'](
-                    name,
-                    salt.utils.build_whitespace_split_regex(chunk),
-                    multiline=True):
+                        name,
+                        salt.utils.build_whitespace_split_regex(chunk),
+                        multiline=True):
                     continue
             elif __salt__['file.search'](
                     name,
@@ -3572,37 +4119,38 @@ def append(name,
                     multiline=True):
                 continue
 
-            lines = chunk.splitlines()
+            for line_item in chunk.splitlines():
+                append_lines.append('{0}'.format(line_item))
 
-            for line in lines:
-                if __opts__['test']:
-                    ret['comment'] = 'File {0} is set to be updated'.format(name)
-                    ret['result'] = None
-                    test_lines.append('{0}\n'.format(line))
-                else:
-                    __salt__['file.append'](name, line)
-                count += 1
     except TypeError:
         return _error(ret, 'No text found to append. Nothing appended')
 
     if __opts__['test']:
-        nlines = slines + test_lines
+        ret['comment'] = 'File {0} is set to be updated'.format(name)
         ret['result'] = None
+        nlines = list(slines)
+        nlines.extend(append_lines)
         if slines != nlines:
             if not salt.utils.istextfile(name):
                 ret['changes']['diff'] = 'Replace binary file'
             else:
                 # Changes happened, add them
                 ret['changes']['diff'] = (
-                    ''.join(difflib.unified_diff(slines, nlines))
+                    '\n'.join(difflib.unified_diff(slines, nlines))
                 )
         else:
             ret['comment'] = 'File {0} is in correct state'.format(name)
             ret['result'] = True
         return ret
 
+    if append_lines:
+        __salt__['file.append'](name, args=append_lines)
+        ret['comment'] = 'Appended {0} lines'.format(len(append_lines))
+    else:
+        ret['comment'] = 'File {0} is in correct state'.format(name)
+
     with salt.utils.fopen(name, 'rb') as fp_:
-        nlines = fp_.readlines()
+        nlines = fp_.read().splitlines()
 
     if slines != nlines:
         if not salt.utils.istextfile(name):
@@ -3610,14 +4158,10 @@ def append(name,
         else:
             # Changes happened, add them
             ret['changes']['diff'] = (
-                ''.join(difflib.unified_diff(slines, nlines))
-            )
+                '\n'.join(difflib.unified_diff(slines, nlines)))
 
-    if count:
-        ret['comment'] = 'Appended {0} lines'.format(count)
-    else:
-        ret['comment'] = 'File {0} is in correct state'.format(name)
     ret['result'] = True
+
     return ret
 
 
@@ -3630,7 +4174,8 @@ def prepend(name,
             sources=None,
             source_hashes=None,
             defaults=None,
-            context=None):
+            context=None,
+            header=None):
     '''
     Ensure that some text appears at the beginning of a file
 
@@ -3658,6 +4203,19 @@ def prepend(name,
               - Trust no one unless you have eaten much salt with him.
               - "Salt is born of the purest of parents: the sun and the sea."
 
+    Optionally, require the text to appear exactly as specified
+    (order and position). Combine with multi-line or multiple lines of input.
+
+    .. code-block:: yaml
+
+        /etc/motd:
+          file.prepend:
+            - header: True
+            - text:
+              - This will be the very first line in the file.
+              - The 2nd line, regardless of duplicates elsewhere in the file.
+              - These will be written anew if they do not appear verbatim.
+
     Gather text from multiple template files:
 
     .. code-block:: yaml
@@ -3667,9 +4225,9 @@ def prepend(name,
               - prepend
               - template: jinja
               - sources:
-                  - salt://motd/devops-messages.tmpl
-                  - salt://motd/hr-messages.tmpl
-                  - salt://motd/general-messages.tmpl
+                - salt://motd/devops-messages.tmpl
+                - salt://motd/hr-messages.tmpl
+                - salt://motd/general-messages.tmpl
 
     .. versionadded:: 2014.7.0
     '''
@@ -3738,11 +4296,13 @@ def prepend(name,
     preface = []
     for chunk in text:
 
-        if __salt__['file.search'](
-                name,
-                salt.utils.build_whitespace_split_regex(chunk),
-                multiline=True):
-            continue
+        # if header kwarg is unset of False, use regex search
+        if not header:
+            if __salt__['file.search'](
+                    name,
+                    salt.utils.build_whitespace_split_regex(chunk),
+                    multiline=True):
+                continue
 
         lines = chunk.splitlines()
 
@@ -3771,7 +4331,24 @@ def prepend(name,
             ret['result'] = True
         return ret
 
-    __salt__['file.prepend'](name, *preface)
+    # if header kwarg is True, use verbatim compare
+    if header:
+        with salt.utils.fopen(name, 'rb') as fp_:
+            # read as many lines of target file as length of user input
+            target_head = fp_.readlines()[0:len(preface)]
+            target_lines = []
+            # strip newline chars from list entries
+            for chunk in target_head:
+                target_lines += chunk.splitlines()
+            # compare current top lines in target file with user input
+            # and write user input if they differ
+            if target_lines != preface:
+                __salt__['file.prepend'](name, *preface)
+            else:
+                # clear changed lines counter if target file not modified
+                count = 0
+    else:
+        __salt__['file.prepend'](name, *preface)
 
     with salt.utils.fopen(name, 'rb') as fp_:
         nlines = fp_.readlines()
@@ -3848,7 +4425,7 @@ def patch(name,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
@@ -3872,7 +4449,7 @@ def patch(name,
     # get cached file or copy it to cache
     cached_source_path = __salt__['cp.cache_file'](source, __env__)
     if not cached_source_path:
-        ret['comment'] = ('Unable to cache {0} from saltenv {1!r}'
+        ret['comment'] = ('Unable to cache {0} from saltenv \'{1}\''
                           .format(source, __env__))
         return ret
 
@@ -4041,6 +4618,14 @@ def copy(
 
         If the name is a directory then place the file inside the named
         directory
+
+    .. note::
+        The copy function accepts paths that are local to the Salt minion.
+        This function does not support salt://, http://, or the other
+        additional file paths that are supported by :mod:`states.file.managed
+        <salt.states.file.managed>` and :mod:`states.file.recurse
+        <salt.states.file.recurse>`.
+
     '''
     name = os.path.expanduser(name)
     source = os.path.expanduser(source)
@@ -4101,7 +4686,8 @@ def copy(
             hash1 = salt.utils.get_hash(name)
             hash2 = salt.utils.get_hash(source)
             if hash1 == hash2:
-                changed = False
+                changed = True
+                ret['comment'] = ' '.join([ret['comment'], '- files are identical but force flag is set'])
         if not force:
             changed = False
         elif not __opts__['test'] and changed:
@@ -4145,7 +4731,10 @@ def copy(
                 'The target directory {0} is not present'.format(dname))
     # All tests pass, move the file into place
     try:
-        shutil.copy(source, name)
+        if os.path.isdir(source):
+            shutil.copytree(source, name, symlinks=True)
+        else:
+            shutil.copy(source, name)
         ret['changes'] = {name: source}
         # Preserve really means just keep the behavior of the cp command. If
         # the filesystem we're copying to is squashed or doesn't support chown
@@ -4353,44 +4942,6 @@ def accumulated(name, filename, text, **kwargs):
     return ret
 
 
-def _merge_dict(obj, k, v):
-    changes = {}
-    if k in obj:
-        if isinstance(obj[k], list):
-            if isinstance(v, list):
-                for a in v:
-                    if a not in obj[k]:
-                        changes[k] = a
-                        obj[k].append(a)
-            else:
-                if obj[k] != v:
-                    changes[k] = v
-                    obj[k] = v
-        elif isinstance(obj[k], dict):
-            if isinstance(v, dict):
-                for a, b in six.iteritems(v):
-                    if isinstance(b, dict) or isinstance(b, list):
-                        updates = _merge_dict(obj[k], a, b)
-                        for x, y in six.iteritems(updates):
-                            changes[k + "." + x] = y
-                    else:
-                        if a not in obj[k] or obj[k][a] != b:
-                            changes[k + "." + a] = b
-                            obj[k][a] = b
-            else:
-                if obj[k] != v:
-                    changes[k] = v
-                    obj[k] = v
-        else:
-            if obj[k] != v:
-                changes[k] = v
-                obj[k] = v
-    else:
-        changes[k] = v
-        obj[k] = v
-    return changes
-
-
 def serialize(name,
               dataset=None,
               dataset_pillar=None,
@@ -4421,7 +4972,7 @@ def serialize(name,
         template can result in YAML formatting issues due to the newlines
         causing indentation mismatches.
 
-        .. versionadded:: FIXME
+        .. versionadded:: 2015.8.0
 
     formatter
         Write the data as this format. Supported output formats:
@@ -4439,7 +4990,11 @@ def serialize(name,
         salt is running as on the minion
 
     mode
-        The permissions to set on this file, aka 644, 0775, 4664
+        The permissions to set on this file, e.g. ``644``, ``0775``, or
+        ``4664``.
+
+        .. note::
+            This option is **not** supported on Windows.
 
     backup
         Overrides the default backup mode for this specific file.
@@ -4499,12 +5054,17 @@ def serialize(name,
             'Oxygen',
             'Parameter \'env\' has been detected in the argument list.  This '
             'parameter is no longer used and has been replaced by \'saltenv\' '
-            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            'as of Salt 2016.11.0.  This warning will be removed in Salt Oxygen.'
             )
         kwargs.pop('env')
 
     name = os.path.expanduser(name)
 
+    default_serializer_opts = {'yaml.serialize': {'default_flow_style': False},
+                              'json.serialize': {'indent': 2,
+                                       'separators': (',', ': '),
+                                       'sort_keys': True}
+                              }
     ret = {'changes': {},
            'comment': '',
            'name': name,
@@ -4541,31 +5101,9 @@ def serialize(name,
         group = user
 
     serializer_name = '{0}.serialize'.format(formatter)
-    if serializer_name in __serializers__:
-        serializer = __serializers__[serializer_name]
-        if merge_if_exists:
-            if os.path.isfile(name):
-                if '{0}.deserialize'.format(formatter) in __serializers__:
-                    with salt.utils.fopen(name, 'r') as fhr:
-                        existing_data = serializer.deserialize(fhr)
-                else:
-                    return {'changes': {},
-                            'comment': ('{0} format is not supported for merging'
-                                        .format(formatter.capitalize())),
-                            'name': name,
-                            'result': False}
+    deserializer_name = '{0}.deserialize'.format(formatter)
 
-                if existing_data is not None:
-                    for k, v in six.iteritems(dataset):
-                        if k in existing_data:
-                            ret['changes'].update(_merge_dict(existing_data, k, v))
-                        else:
-                            ret['changes'][k] = v
-                            existing_data[k] = v
-                    dataset = existing_data
-
-        contents = __serializers__[serializer_name](dataset)
-    else:
+    if serializer_name not in __serializers__:
         return {'changes': {},
                 'comment': '{0} format is not supported'.format(
                     formatter.capitalize()),
@@ -4573,13 +5111,38 @@ def serialize(name,
                 'result': False
                 }
 
+    if merge_if_exists:
+        if os.path.isfile(name):
+            if '{0}.deserialize'.format(formatter) not in __serializers__:
+                return {'changes': {},
+                        'comment': ('{0} format is not supported for merging'
+                                    .format(formatter.capitalize())),
+                        'name': name,
+                        'result': False}
+
+            with salt.utils.fopen(name, 'r') as fhr:
+                existing_data = __serializers__[deserializer_name](fhr)
+
+            if existing_data is not None:
+                merged_data = salt.utils.dictupdate.merge_recurse(existing_data, dataset)
+                if existing_data == merged_data:
+                    ret['result'] = True
+                    ret['comment'] = 'The file {0} is in the correct state'.format(name)
+                    return ret
+                dataset = merged_data
+    contents = __serializers__[serializer_name](dataset, **default_serializer_opts.get(serializer_name, {}))
+
     contents += '\n'
+
+    # Make sure that any leading zeros stripped by YAML loader are added back
+    mode = salt.utils.normalize_mode(mode)
 
     if __opts__['test']:
         ret['changes'] = __salt__['file.check_managed_changes'](
             name=name,
             source=None,
             source_hash={},
+            source_hash_name=None,
             user=user,
             group=group,
             mode=mode,
@@ -4679,12 +5242,12 @@ def mknod(name, ntype, major=0, minor=0, user=None, group=None, mode='0600'):
             - group: root
             - mode: 660
 
-       /dev/fifo:
-         file.mknod:
-           - ntype: p
-           - user: root
-           - group: root
-           - mode: 660
+        /dev/fifo:
+          file.mknod:
+            - ntype: p
+            - user: root
+            - group: root
+            - mode: 660
 
     .. versionadded:: 0.17.0
     '''
@@ -4828,7 +5391,7 @@ def mknod(name, ntype, major=0, minor=0, user=None, group=None, mode='0600'):
 
     else:
         ret['comment'] = (
-            'Node type unavailable: {0!r}. Available node types are '
+            'Node type unavailable: \'{0}\'. Available node types are '
             'character (\'c\'), block (\'b\'), and pipe (\'p\')'.format(ntype)
         )
 

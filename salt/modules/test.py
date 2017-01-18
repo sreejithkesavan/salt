@@ -37,7 +37,7 @@ def attr_call():
     '''
     Call grains.items via the attribute
 
-    CLI Example::
+    CLI Example:
 
     .. code-block:: bash
 
@@ -51,7 +51,7 @@ def module_report():
     Return a dict containing all of the execution modules with a report on
     the overall availability via different references
 
-    CLI Example::
+    CLI Example:
 
     .. code-block:: bash
 
@@ -321,6 +321,8 @@ def fib(num):
         salt '*' test.fib 3
     '''
     num = int(num)
+    if num < 0:
+        raise ValueError('Negative number is not allowed!')
     start = time.time()
     if num < 2:
         return num, time.time() - start
@@ -569,7 +571,7 @@ def assertion(assertion):
 
     .. code-block:: bash
 
-        salt '*' test.assert False
+        salt '*' test.assertion False
     '''
     assert assertion
 

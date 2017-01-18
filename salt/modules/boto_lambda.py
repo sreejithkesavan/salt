@@ -5,7 +5,7 @@ Connection module for Amazon Lambda
 .. versionadded:: 2016.3.0
 
 :configuration: This module accepts explicit Lambda credentials but can also
-    utilize IAM roles assigned to the instance trough Instance Profiles.
+    utilize IAM roles assigned to the instance through Instance Profiles.
     Dynamic credentials are then automatically obtained from AWS API and no
     further configuration is necessary. More Information available at:
 
@@ -84,11 +84,11 @@ import time
 import random
 
 # Import Salt libs
+import salt.ext.six as six
 import salt.utils.boto3
 import salt.utils.compat
 import salt.utils
 from salt.exceptions import SaltInvocationError
-from salt.ext.six import string_types
 from salt.ext.six.moves import range  # pylint: disable=import-error
 
 log = logging.getLogger(__name__)
@@ -325,8 +325,9 @@ def describe_function(FunctionName, region=None, key=None,
 
 
 def update_function_config(FunctionName, Role=None, Handler=None,
-                           Description=None, Timeout=None, MemorySize=None,
-            region=None, key=None, keyid=None, profile=None, VpcConfig=None):
+            Description=None, Timeout=None, MemorySize=None,
+            region=None, key=None, keyid=None, profile=None, VpcConfig=None,
+            WaitForRole=False, RoleRetries=5):
     '''
     Update the named lambda function to the configuration.
 
@@ -342,13 +343,13 @@ def update_function_config(FunctionName, Role=None, Handler=None,
     '''
 
     args = dict(FunctionName=FunctionName)
-    for val, var in {
-        'Handler': Handler,
-        'Description': Description,
-        'Timeout': Timeout,
-        'MemorySize': MemorySize,
-        'VpcConfig': VpcConfig,
-    }.iteritems():
+    options = {'Handler': Handler,
+               'Description': Description,
+               'Timeout': Timeout,
+               'MemorySize': MemorySize,
+               'VpcConfig': VpcConfig}
+
+    for val, var in six.iteritems(options):
         if var:
             args[val] = var
     if Role:
@@ -356,7 +357,23 @@ def update_function_config(FunctionName, Role=None, Handler=None,
         args['Role'] = role_arn
     try:
         conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
-        r = conn.update_function_configuration(**args)
+        if WaitForRole:
+            retrycount = RoleRetries
+        else:
+            retrycount = 1
+        for retry in range(retrycount, 0, -1):
+            try:
+                r = conn.update_function_configuration(**args)
+            except ClientError as e:
+                if retry > 1 and e.response.get('Error', {}).get('Code') == 'InvalidParameterValueException':
+                    log.info('Function not updated but IAM role may not have propagated, will retry')
+                    # exponential backoff
+                    time.sleep((2 ** (RoleRetries - retry)) + (random.randint(0, 1000) / 1000))
+                    continue
+                else:
+                    raise
+            else:
+                break
         if r:
             keys = ('FunctionName', 'Runtime', 'Role', 'Handler', 'CodeSha256',
                 'CodeSize', 'Description', 'Timeout', 'MemorySize', 'FunctionArn',
@@ -481,7 +498,7 @@ def remove_permission(FunctionName, StatementId, Qualifier=None,
 
 
 def get_permissions(FunctionName, Qualifier=None,
-                   region=None, key=None, keyid=None, profile=None):
+                    region=None, key=None, keyid=None, profile=None):
     '''
     Get resource permissions for the given lambda function
 
@@ -506,7 +523,7 @@ def get_permissions(FunctionName, Qualifier=None,
         policy = conn.get_policy(FunctionName=FunctionName,
                                    **kwargs)
         policy = policy.get('Policy', {})
-        if isinstance(policy, string_types):
+        if isinstance(policy, six.string_types):
             policy = json.loads(policy)
         if policy is None:
             policy = {}

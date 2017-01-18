@@ -63,7 +63,7 @@ class SaltCacheLoader(BaseLoader):
             self.searchpath = opts['file_roots'][saltenv]
         else:
             self.searchpath = [path.join(opts['cachedir'], 'files', saltenv)]
-        log.debug('Jinja search path: \'{0}\''.format(self.searchpath))
+        log.debug('Jinja search path: %s', self.searchpath)
         self._file_client = None
         self.cached = []
         self.pillar_rend = pillar_rend
@@ -154,10 +154,10 @@ class PrintableDict(OrderedDict):
         for key, value in six.iteritems(self):
             if isinstance(value, six.string_types):
                 # keeps quotes around strings
-                output.append('\'{0}\': \'{1}\''.format(key, value))
+                output.append('{0!r}: {1!r}'.format(key, value))  # pylint: disable=repr-flag-used-in-string
             else:
                 # let default output
-                output.append('\'{0}\': {1!s}'.format(key, value))
+                output.append('{0!r}: {1!s}'.format(key, value))  # pylint: disable=repr-flag-used-in-string
         return '{' + ', '.join(output) + '}'
 
     def __repr__(self):  # pylint: disable=W0221
@@ -165,7 +165,7 @@ class PrintableDict(OrderedDict):
         for key, value in six.iteritems(self):
             # Raw string formatter required here because this is a repr
             # function.
-            output.append('\'{0}\': {1!r}'.format(key, value))
+            output.append('{0!r}: {1!r}'.format(key, value))  # pylint: disable=repr-flag-used-in-string
         return '{' + ', '.join(output) + '}'
 
 
@@ -272,7 +272,7 @@ class SerializerExtension(Extension, object):
 
     **Load tags**
 
-    Salt implements ``import_yaml`` and ``import_json`` tags. They work like
+    Salt implements ``load_yaml`` and ``load_json`` tags. They work like
     the `import tag`_, except that the document is also deserialized.
 
     Syntaxes are ``{% load_yaml as [VARIABLE] %}[YOUR DATA]{% endload %}``
@@ -340,7 +340,6 @@ class SerializerExtension(Extension, object):
         super(SerializerExtension, self).__init__(environment)
         self.environment.filters.update({
             'yaml': self.format_yaml,
-            'yaml_safe': self.format_yaml_safe,
             'json': self.format_json,
             'python': self.format_python,
             'load_yaml': self.load_yaml,
@@ -378,15 +377,8 @@ class SerializerExtension(Extension, object):
     def format_yaml(self, value, flow_style=True):
         yaml_txt = yaml.dump(value, default_flow_style=flow_style,
                              Dumper=OrderedDictDumper).strip()
-        if yaml_txt.endswith('\n...\n'):
-            yaml_txt = yaml_txt[:len(yaml_txt-5)]
-        return Markup(yaml_txt)
-
-    def format_yaml_safe(self, value, flow_style=True):
-        yaml_txt = yaml.safe_dump(value, default_flow_style=flow_style,
-                                  Dumper=OrderedDictDumper).strip()
-        if yaml_txt.endswith('\n...\n'):
-            yaml_txt = yaml_txt[:len(yaml_txt-5)]
+        if yaml_txt.endswith('\n...'):
+            yaml_txt = yaml_txt[:len(yaml_txt)-4]
         return Markup(yaml_txt)
 
     def format_python(self, value):
