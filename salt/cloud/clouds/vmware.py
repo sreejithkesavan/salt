@@ -786,7 +786,7 @@ def _wait_for_vmware_tools(vm_ref, max_wait):
     return False
 
 
-def _valid_ip(ip_address, expected_ip=None):
+def _valid_ip(ip_address, expected_ips):
     '''
     Check if the IP address is valid
     Return either True or False
@@ -829,13 +829,16 @@ def _valid_ip(ip_address, expected_ip=None):
     for octet in (second_octet, third_octet, fourth_octet):
         if (octet < 0) or (octet > 255):
             return False
-    if expected_ip is not None and ip_address != expected_ip:
+
+    # For static IP address configuration, if the VM is deployed in a DHCP network, we initially get a DHCP address for
+    # a short period of time. We need to wait till the real address gets assigned
+    if len(expected_ips) > 0 and ip_address not in expected_ips:
         return False
     # Passed all of the checks
     return True
 
 
-def _wait_for_ip(vm_ref, max_wait, expected_ip):
+def _wait_for_ip(vm_ref, max_wait, expected_ips):
     max_wait_vmware_tools = max_wait
     max_wait_ip = max_wait
     vmware_tools_status = _wait_for_vmware_tools(vm_ref, max_wait_vmware_tools)
@@ -848,14 +851,14 @@ def _wait_for_ip(vm_ref, max_wait, expected_ip):
             log.info("[ {0} ] Waiting to retrieve IPv4 information [{1} s]".format(vm_ref.name, time_counter))
 
         log.info("[ {0} ] Validating IPv4 address [ {1} ]".format(vm_ref.name, vm_ref.summary.guest.ipAddress))
-        if vm_ref.summary.guest.ipAddress and _valid_ip(vm_ref.summary.guest.ipAddress, expected_ip):
+        if vm_ref.summary.guest.ipAddress and _valid_ip(vm_ref.summary.guest.ipAddress, expected_ips):
             log.info("[ {0} ] Successfully retrieved IPv4 information in {1} seconds".format(vm_ref.name, time_counter))
             return vm_ref.summary.guest.ipAddress
         for net in vm_ref.guest.net:
             if net.ipConfig.ipAddress:
                 for current_ip in net.ipConfig.ipAddress:
                     log.info("[ {0} ] Validating IPv4 address [ {1} ]".format(vm_ref.name, current_ip.ipAddress))
-                    if _valid_ip(current_ip.ipAddress, expected_ip):
+                    if _valid_ip(current_ip.ipAddress, expected_ips):
                         log.info("[ {0} ] Successfully retrieved IPv4 information in {1} seconds".format(vm_ref.name, time_counter))
                         return current_ip.ipAddress
         time.sleep(1.0 - ((time.time() - starttime) % 1.0))
@@ -2548,11 +2551,14 @@ def create(vm_):
     # If it a template or if it does not need to be powered on then do not wait for the IP
     out = None
     if not template and power:
+        expected_ips = []
         try:
-            expected_ip = vm_['devices']['network']['Network adapter 1']['ip']
+            for network_adapter in vm_['devices']['network'].values():
+                ip = network_adapter.get('ip')
+                expected_ips += [] if ip is None else [ip]
         except:
-            expected_ip = None
-        ip = _wait_for_ip(new_vm_ref, wait_for_ip_timeout, expected_ip)
+            pass
+        ip = _wait_for_ip(new_vm_ref, wait_for_ip_timeout, expected_ips)
         if ip:
             log.info("[ {0} ] IPv4 is: {1}".format(vm_name, ip))
             # ssh or smb using ip and install salt only if deploy is True
