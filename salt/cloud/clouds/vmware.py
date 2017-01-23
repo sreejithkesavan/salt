@@ -565,7 +565,9 @@ def _add_new_cd_or_dvd_drive_helper(drive_label, controller_key, device_type, mo
     drive_spec.device.deviceInfo.label = drive_label
     drive_spec.device.controllerKey = controller_key
     drive_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+    log.info('Making the CD/DVD drive connect upon starting the VM')
     drive_spec.device.connectable.startConnected = True
+    log.info('Allowing Guest control on the CD/DVD drive')
     drive_spec.device.connectable.allowGuestControl = True
 
     return drive_spec
