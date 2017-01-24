@@ -366,6 +366,13 @@ def _edit_existing_network_adapter(network_adapter, new_network_name, adapter_ty
     network_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
     network_spec.device = edited_network_adapter
 
+    # NOTE: Make the available networks connected on edits as well.
+    network_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+    log.info('Making the network connect upon starting the VM')
+    network_spec.device.connectable.startConnected = True
+    log.info('Allowing Guest control on the network')
+    network_spec.device.connectable.allowGuestControl = True
+
     return network_spec
 
 
@@ -535,6 +542,13 @@ def _edit_existing_cd_or_dvd_drive(drive, device_type, mode, iso_path):
     drive_spec = vim.vm.device.VirtualDeviceSpec()
     drive_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
     drive_spec.device = _set_cd_or_dvd_backing_type(drive, device_type, mode, iso_path)
+
+    # NOTE: Make the available CD/DVD drives connected on edits as well.
+    drive_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+    log.info('Making the CD/DVD drive connect upon starting the VM')
+    drive_spec.device.connectable.startConnected = True
+    log.info('Allowing Guest control on the CD/DVD drive')
+    drive_spec.device.connectable.allowGuestControl = True
 
     return drive_spec
 
