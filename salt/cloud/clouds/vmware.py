@@ -861,6 +861,18 @@ def _wait_for_ip(vm_ref, max_wait, expected_ips):
     if not vmware_tools_status:
         return False
     time_counter = 0
+    # If the following sequence of events happen
+    # (a) Create a VM and assign a static IP address ( say, 192.168.1.5 ) to it
+    # (b) Convert the VM into a template
+    # (c) Deploy this template into a network with DHCP
+    # This causes the following problem :
+    # (i) The VM boots up with the previous static IP address ( 192.168.1.5 )
+    # (ii) Salt picks up this static address and proceeds with the assumption that this is the final IP address
+    # (iii) The VM gets a new address from DHCP ( say 192.168.2.5 )
+    # Now, salt thinks that the IP address of the machine is 192.168.1.5, while the current IP address is 192.168.2.5
+    # As a mitigation to this problem, we wait till the IP address changes to the _real_ IP address of the machine
+    log.info('Sleeping for IP address stabilization')
+    time.sleep(60)
     starttime = time.time()
     while time_counter < max_wait_ip:
         if time_counter % 5 == 0:
