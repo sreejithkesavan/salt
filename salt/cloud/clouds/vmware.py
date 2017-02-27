@@ -368,9 +368,9 @@ def _edit_existing_network_adapter(network_adapter, new_network_name, adapter_ty
 
     # NOTE: Make the available networks connected on edits as well.
     network_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
-    log.info('Making the network connect upon starting the VM')
+    log.info(u'Making the network connect upon starting the VM')
     network_spec.device.connectable.startConnected = True
-    log.info('Allowing Guest control on the network')
+    log.info(u'Allowing Guest control on the network')
     network_spec.device.connectable.allowGuestControl = True
 
     return network_spec
@@ -545,9 +545,9 @@ def _edit_existing_cd_or_dvd_drive(drive, device_type, mode, iso_path):
 
     # NOTE: Make the available CD/DVD drives connected on edits as well.
     drive_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
-    log.info('Making the CD/DVD drive connect upon starting the VM')
+    log.info(u'Making the CD/DVD drive connect upon starting the VM')
     drive_spec.device.connectable.startConnected = True
-    log.info('Allowing Guest control on the CD/DVD drive')
+    log.info(u'Allowing Guest control on the CD/DVD drive')
     drive_spec.device.connectable.allowGuestControl = True
 
     return drive_spec
@@ -579,9 +579,9 @@ def _add_new_cd_or_dvd_drive_helper(drive_label, controller_key, device_type, mo
     drive_spec.device.deviceInfo.label = drive_label
     drive_spec.device.controllerKey = controller_key
     drive_spec.device.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
-    log.info('Making the CD/DVD drive connect upon starting the VM')
+    log.info(u'Making the CD/DVD drive connect upon starting the VM')
     drive_spec.device.connectable.startConnected = True
-    log.info('Allowing Guest control on the CD/DVD drive')
+    log.info(u'Allowing Guest control on the CD/DVD drive')
     drive_spec.device.connectable.allowGuestControl = True
 
     return drive_spec
@@ -714,7 +714,7 @@ def _manage_devices(devices, vm=None, container_ref=None):
     if 'ide' in list(devices.keys()):
         ide_controllers_to_create = list(set(devices['ide'].keys()) - set(existing_ide_controllers_label))
         ide_controllers_to_create.sort()
-        log.debug('IDE controllers to create: {0}'.format(ide_controllers_to_create)) if ide_controllers_to_create else None  # pylint: disable=W0106
+        log.debug(u'IDE controllers to create: {0}'.format(ide_controllers_to_create)) if ide_controllers_to_create else None  # pylint: disable=W0106
         for ide_controller_label in ide_controllers_to_create:
             # create the IDE controller
             ide_spec = _add_new_ide_controller_helper(ide_controller_label, None, bus_number)
@@ -740,9 +740,9 @@ def _manage_devices(devices, vm=None, container_ref=None):
                         break
 
             device_specs.append(disk_spec)
-            #condition to assign SCSI controller to disk on 0-15 node except 7. 
+            #condition to assign SCSI controller to disk on 0-15 node except 7.
             #Because, the virtual SCSI controller is assigned to virtual device node (z:7),
-            #so that device node is unavailable for hard disks or other devices. 
+            #so that device node is unavailable for hard disks or other devices.
             #Reference https://pubs.vmware.com/vsphere-60/index.jsp?topic=%2Fcom.vmware.vsphere.vm_admin.doc%2FGUID-5872D173-A076-42FE-8D0B-9DB0EB0E7362.html
             unit_number += 2 if unit_number == 6 else 1
 
@@ -871,7 +871,7 @@ def _wait_for_ip(vm_ref, max_wait, expected_ips):
     # (iii) The VM gets a new address from DHCP ( say 192.168.2.5 )
     # Now, salt thinks that the IP address of the machine is 192.168.1.5, while the current IP address is 192.168.2.5
     # As a mitigation to this problem, we wait till the IP address changes to the _real_ IP address of the machine
-    log.info('Sleeping for IP address stabilization')
+    log.info(u'Sleeping for IP address stabilization')
     time.sleep(60)
     starttime = time.time()
     while time_counter < max_wait_ip:
@@ -923,7 +923,7 @@ def _wait_for_host(host_ref, task_type, sleep_seconds=5, log_level='debug'):
         else:
             log.debug(message)
     else:
-        log.error('Could not connect back to the host system')
+        log.error(u'Could not connect back to the host system')
 
 
 def _format_instance_info_select(vm, selection):
@@ -1192,10 +1192,10 @@ def _upg_tools_helper(vm, reboot=False):
     # If vmware tools is out of date, check major OS family
     # Upgrade tools on Linux and Windows guests
     if vm.guest.toolsStatus == "toolsOld":
-        log.info('Upgrading VMware tools on {0}'.format(vm.name))
+        log.info(u'Upgrading VMware tools on {0}'.format(vm.name))
         try:
             if vm.guest.guestFamily == "windowsGuest" and not reboot:
-                log.info('Reboot suppressed on {0}'.format(vm.name))
+                log.info(u'Reboot suppressed on {0}'.format(vm.name))
                 task = vm.UpgradeTools('/S /v"/qn REBOOT=R"')
             elif vm.guest.guestFamily in ["linuxGuest", "windowsGuest"]:
                 task = vm.UpgradeTools()
@@ -1898,10 +1898,10 @@ def start(name, call=None):
         if vm["name"] == name:
             if vm["summary.runtime.powerState"] == "poweredOn":
                 ret = 'already powered on'
-                log.info('VM {0} {1}'.format(name, ret))
+                log.info(u'VM {0} {1}'.format(name, ret))
                 return ret
             try:
-                log.info('Starting VM {0}'.format(name))
+                log.info(u'Starting VM {0}'.format(name))
                 task = vm["object"].PowerOn()
                 salt.utils.vmware.wait_for_task(task, name, 'power on')
             except Exception as exc:
@@ -1945,10 +1945,10 @@ def stop(name, call=None):
         if vm["name"] == name:
             if vm["summary.runtime.powerState"] == "poweredOff":
                 ret = 'already powered off'
-                log.info('VM {0} {1}'.format(name, ret))
+                log.info(u'VM {0} {1}'.format(name, ret))
                 return ret
             try:
-                log.info('Stopping VM {0}'.format(name))
+                log.info(u'Stopping VM {0}'.format(name))
                 task = vm["object"].PowerOff()
                 salt.utils.vmware.wait_for_task(task, name, 'power off')
             except Exception as exc:
@@ -1992,14 +1992,14 @@ def suspend(name, call=None):
         if vm["name"] == name:
             if vm["summary.runtime.powerState"] == "poweredOff":
                 ret = 'cannot suspend in powered off state'
-                log.info('VM {0} {1}'.format(name, ret))
+                log.info(u'VM {0} {1}'.format(name, ret))
                 return ret
             elif vm["summary.runtime.powerState"] == "suspended":
                 ret = 'already suspended'
-                log.info('VM {0} {1}'.format(name, ret))
+                log.info(u'VM {0} {1}'.format(name, ret))
                 return ret
             try:
-                log.info('Suspending VM {0}'.format(name))
+                log.info(u'Suspending VM {0}'.format(name))
                 task = vm["object"].Suspend()
                 salt.utils.vmware.wait_for_task(task, name, 'suspend')
             except Exception as exc:
@@ -2043,10 +2043,10 @@ def reset(name, call=None):
         if vm["name"] == name:
             if vm["summary.runtime.powerState"] == "suspended" or vm["summary.runtime.powerState"] == "poweredOff":
                 ret = 'cannot reset in suspended/powered off state'
-                log.info('VM {0} {1}'.format(name, ret))
+                log.info(u'VM {0} {1}'.format(name, ret))
                 return ret
             try:
-                log.info('Resetting VM {0}'.format(name))
+                log.info(u'Resetting VM {0}'.format(name))
                 task = vm["object"].Reset()
                 salt.utils.vmware.wait_for_task(task, name, 'reset')
             except Exception as exc:
@@ -2091,10 +2091,10 @@ def terminate(name, call=None):
         if vm["name"] == name:
             if vm["summary.runtime.powerState"] == "poweredOff":
                 ret = 'already powered off'
-                log.info('VM {0} {1}'.format(name, ret))
+                log.info(u'VM {0} {1}'.format(name, ret))
                 return ret
             try:
-                log.info('Terminating VM {0}'.format(name))
+                log.info(u'Terminating VM {0}'.format(name))
                 vm["object"].Terminate()
             except Exception as exc:
                 log.error(
@@ -2148,7 +2148,7 @@ def destroy(name, call=None):
             if vm["summary.runtime.powerState"] != "poweredOff":
                 # Power off the vm first
                 try:
-                    log.info('Powering Off VM {0}'.format(name))
+                    log.info(u'Powering Off VM {0}'.format(name))
                     task = vm["object"].PowerOff()
                     salt.utils.vmware.wait_for_task(task, name, 'power off')
                 except Exception as exc:
@@ -2162,7 +2162,7 @@ def destroy(name, call=None):
                     )
                     return 'failed to destroy'
             try:
-                log.info('Destroying VM {0}'.format(name))
+                log.info(u'Destroying VM {0}'.format(name))
                 task = vm["object"].Destroy_Task()
                 salt.utils.vmware.wait_for_task(task, name, 'destroy')
             except Exception as exc:
@@ -2503,7 +2503,7 @@ def create(vm_):
         if not template:
             clone_spec.powerOn = power
 
-        log.debug('clone_spec set to:\n{0}'.format(
+        log.debug(u'clone_spec set to:\n{0}'.format(
             pprint.pformat(clone_spec))
         )
 
@@ -2513,7 +2513,7 @@ def create(vm_):
         config_spec.files.vmPathName = '[{0}] {1}/{1}.vmx'.format(datastore, vm_name)
         config_spec.guestId = guest_id
 
-        log.debug('config_spec set to:\n{0}'.format(
+        log.debug(u'config_spec set to:\n{0}'.format(
             pprint.pformat(config_spec))
         )
 
@@ -2556,7 +2556,7 @@ def create(vm_):
                 task = object_ref.Clone(folder_ref, vm_name, clone_spec)
                 salt.utils.vmware.wait_for_task(task, vm_name, 'clone', 5, 'info')
         else:
-            log.info('Creating {0}'.format(vm_['name']))
+            log.info(u'Creating {0}'.format(vm_['name']))
 
             task = folder_ref.CreateVM_Task(config_spec, resourcepool_ref)
             salt.utils.vmware.wait_for_task(task, vm_name, "create", 5, 'info')
@@ -2770,11 +2770,11 @@ def rescan_hba(kwargs=None, call=None):
 
     try:
         if hba:
-            log.info('Rescanning HBA {0} on host {1}'.format(hba, host_name))
+            log.info(u'Rescanning HBA {0} on host {1}'.format(hba, host_name))
             host_ref.configManager.storageSystem.RescanHba(hba)
             ret = 'rescanned HBA {0}'.format(hba)
         else:
-            log.info('Rescanning all HBAs on host {0}'.format(host_name))
+            log.info(u'Rescanning all HBAs on host {0}'.format(host_name))
             host_ref.configManager.storageSystem.RescanAllHba()
             ret = 'rescanned all HBAs'
     except Exception as exc:
@@ -3334,7 +3334,7 @@ def create_snapshot(name, kwargs=None, call=None):
     vm_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.VirtualMachine, name)
 
     if vm_ref.summary.runtime.powerState != "poweredOn":
-        log.debug('VM {0} is not powered on. Setting both memdump and quiesce to False'.format(name))
+        log.debug(u'VM {0} is not powered on. Setting both memdump and quiesce to False'.format(name))
         memdump = False
         quiesce = False
 
@@ -3400,7 +3400,7 @@ def revert_to_snapshot(name, kwargs=None, call=None):
     vm_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.VirtualMachine, name)
 
     if not vm_ref.rootSnapshot:
-        log.error('VM {0} does not contain any current snapshots'.format(name))
+        log.error(u'VM {0} does not contain any current snapshots'.format(name))
         return 'revert failed'
 
     try:
@@ -3569,13 +3569,13 @@ def add_host(kwargs=None, call=None):
     else:
         log.warning('SSL thumbprint has not been specified in provider configuration')
         try:
-            log.debug('Trying to get the SSL thumbprint directly from the host system')
+            log.debug(u'Trying to get the SSL thumbprint directly from the host system')
             p1 = subprocess.Popen(('echo', '-n'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             p2 = subprocess.Popen(('openssl', 's_client', '-connect', '{0}:443'.format(host_name)), stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             p3 = subprocess.Popen(('openssl', 'x509', '-noout', '-fingerprint', '-sha1'), stdin=p2.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out = salt.utils.to_str(p3.stdout.read())
             ssl_thumbprint = out.split('=')[-1].strip()
-            log.debug('SSL thumbprint received from the host system: {0}'.format(ssl_thumbprint))
+            log.debug(u'SSL thumbprint received from the host system: {0}'.format(ssl_thumbprint))
             spec.sslThumbprint = ssl_thumbprint
         except Exception as exc:
             log.error(
@@ -3598,8 +3598,8 @@ def add_host(kwargs=None, call=None):
         salt.utils.vmware.wait_for_task(task, host_name, 'add host system', 5, 'info')
     except Exception as exc:
         if isinstance(exc, vim.fault.SSLVerifyFault):
-            log.error('Authenticity of the host\'s SSL certificate is not verified')
-            log.info('Try again after setting the esxi_host_ssl_thumbprint to {0} in provider configuration'.format(exc.thumbprint))
+            log.error(u'Authenticity of the host\'s SSL certificate is not verified')
+            log.info(u'Try again after setting the esxi_host_ssl_thumbprint to {0} in provider configuration'.format(exc.thumbprint))
         log.error(
             'Error while adding host {0}: {1}'.format(
                 host_name,
