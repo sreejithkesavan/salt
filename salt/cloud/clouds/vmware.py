@@ -2571,6 +2571,71 @@ def create(vm_):
 
     new_vm_ref = salt.utils.vmware.get_mor_by_property(_get_si(), vim.VirtualMachine, vm_name, container_ref=container_ref)
 
+    # Find NIC from the VM and create specs for deletion and addition.
+    virtual_nic_spec_del = None
+    virtual_nic_spec_add = None
+    for device in new_vm_ref.config.hardware.device:
+        if isinstance(device.backing, vim.vm.device.VirtualEthernetCard.NetworkBackingInfo) or isinstance(
+                device.backing, vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo):
+            if not device.connectable.startConnected:
+                # Remove the NIC
+                log.info('Creating the NIC spec for deletion')
+                virtual_nic_spec_del = vim.vm.device.VirtualDeviceSpec()
+                virtual_nic_spec_del.operation = vim.vm.device.VirtualDeviceSpec.Operation.remove
+                virtual_nic_spec_del.device = device
+                # virtual_nic_spec_del.device.key = device.key
+                # virtual_nic_spec_del.device.macAddress = device.macAddress
+                # virtual_nic_spec_del.device.backing = device.backing
+                # virtual_nic_spec_del.device.wakeOnLanEnabled = device.wakeOnLanEnabled
+                # connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+                # connectable.connected = True
+                # connectable.startConnected = True
+                # connectable.allowGuestControl = True
+                # connectable = device.connectable
+                # virtual_nic_spec_del.device.connectable = connectable
+
+                # Reconnect the NIC
+                log.info('Creating the NIC spec for addition')
+                virtual_nic_spec_add = vim.vm.device.VirtualDeviceSpec()
+                virtual_nic_spec_add.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+                virtual_nic_spec_add.device = device
+                virtual_nic_spec_add.device.deviceInfo = vim.Description()
+                virtual_nic_spec_add.device.deviceInfo.label = device.deviceInfo.label
+                virtual_nic_spec_add.device.deviceInfo.summary = device.deviceInfo.summary
+                virtual_nic_spec_add.device.key = randint(-4099, -4000)
+                virtual_nic_spec_add.device.macAddress = device.macAddress
+                virtual_nic_spec_add.device.backing = device.backing
+                virtual_nic_spec_add.device.wakeOnLanEnabled = device.wakeOnLanEnabled
+                connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+                connectable.connected = True
+                connectable.startConnected = True
+                connectable.allowGuestControl = True
+                connectable = device.connectable
+                virtual_nic_spec_add.device.connectable = connectable
+            break
+
+    # Remove the NIC
+    if virtual_nic_spec_del is not None:
+        log.info('Removing and re-connecting NIC before reboot.')
+        dev_changes = []
+        dev_changes.append(virtual_nic_spec_del)
+        spec = vim.vm.ConfigSpec()
+        spec.deviceChange = dev_changes
+        task = new_vm_ref.ReconfigVM_Task(spec=spec)
+        salt.utils.vmware.wait_for_task(task, vm_name, 'remove_nic')
+        log.info('NIC removed successfully.')
+
+    # Reconnect the NIC
+    if virtual_nic_spec_add is not None:
+        log.info('Reconnecting the NIC.')
+        dev_changes = []
+        dev_changes.append(virtual_nic_spec_add)
+        spec = vim.vm.ConfigSpec()
+        spec.deviceChange = dev_changes
+        task = new_vm_ref.ReconfigVM_Task(spec=spec)
+        salt.utils.vmware.wait_for_task(task, vm_name, 'add_nic')
+        log.info('NIC reconnected.')
+
     # Find how to power on in CreateVM_Task (if possible), for now this will do
     if not clone_type and power:
         task = new_vm_ref.PowerOn()
